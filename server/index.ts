@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listDirectories, createDirectory } from './runtime/directories.ts';
+import { openWorkspaceInExplorer } from './runtime/explorer.ts';
 import { listPets, petFile } from './runtime/pets.ts';
 import { RuntimeManager } from './runtime/manager.ts';
 import { orchestratorSettings, updateOrchestratorSettings } from './adapters/orchestrator/settings.ts';
@@ -51,6 +52,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/session/recycle') {const b=await body(req);return respond(res,200,await recycling.recycle(b.workspaceId,b.sessionId))}
     if (req.method === 'POST' && url.pathname === '/api/workspaces/update') { const b=await body(req);return respond(res,200,{workspace:await store.update(b.id,{name:b.name,pinned:b.pinned,open:b.open})}); }
     if (req.method === 'POST' && url.pathname === '/api/workspaces/remove') { const b=await body(req);await runtime.removeWorkspace(b.id);return respond(res,200,{ok:true}); }
+    if (req.method === 'POST' && url.pathname === '/api/workspaces/explorer') { const b=await body(req);await openWorkspaceInExplorer(store,b.id);return respond(res,200,{ok:true}); }
     if (req.method === 'GET' && url.pathname === '/api/directories') return respond(res, 200, await listDirectories(url.searchParams.get('path') ?? undefined));
     if (req.method === 'POST' && url.pathname === '/api/directories/create') { const b = await body(req); return respond(res, 200, await createDirectory(b.parent, b.name)); }
     if (req.method === 'GET' && url.pathname === '/api/pets') return respond(res,200,{pets:await listPets()});
