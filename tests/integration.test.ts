@@ -56,5 +56,5 @@ test('HTTP server ↔ Pi adapter session lifecycle and canonical SSE', { timeout
     assert.equal(finished.length,1);assert.equal(finished[0].sessionName,'Renamed task');assert.equal(finished[0].running,false);assert.equal(finished[0].completion.status,'completed');
     assert.equal((await request(`/api/sessions?workspaceId=${otherWs.id}`)).sessions.length,0);
     await reader.cancel(); await consume.catch(()=>{});
-  } finally { proc.kill(); await once(proc,'close').catch(()=>{});await rm(root,{recursive:true,force:true}); }
+  } finally { proc.kill(); await once(proc,'close').catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:200}); }
 });
