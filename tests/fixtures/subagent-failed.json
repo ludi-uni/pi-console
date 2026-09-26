@@ -1,0 +1,1 @@
+{"type":"tool_execution_end","toolName":"subagent","toolCallId":"call-child","isError":true,"result":{"details":{"mode":"single","runId":"child-run-1","results":[{"index":0,"agent":"coder","exitCode":1,"error":"model failed"}]}}}

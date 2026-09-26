@@ -1,0 +1,1 @@
+{"toolName":"subagent","toolCallId":"call-child","type":"tool_execution_update","partialResult":{"details":{"mode":"single","runId":"child-run-1","results":[{"index":0,"agent":"coder","exitCode":0,"model":"provider/model","progress":{"activityState":"working","currentTool":"powershell","toolCount":1}}]}}}

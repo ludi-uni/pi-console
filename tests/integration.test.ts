@@ -1,0 +1,58 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { once } from 'node:events';
+test('HTTP server ↔ Pi adapter session lifecycle and canonical SSE', { timeout: 30000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(),'pi-console-int-'));
+  const cli = join(root,'fake-pi.cjs');
+  await writeFile(cli, `const fs=require('fs'),path=require('path'),readline=require('readline');const dir=process.argv.includes('--session-dir')?process.argv[process.argv.indexOf('--session-dir')+1]:process.env.PI_CODING_AGENT_SESSION_DIR;fs.mkdirSync(dir,{recursive:true});const file=process.argv.includes('--session')?process.argv[process.argv.indexOf('--session')+1]:path.join(dir,'fake.jsonl');if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({type:'session',id:'fake-uuid',cwd:process.cwd()})+'\\n');function emit(r){process.stdout.write(JSON.stringify(r)+'\\n')}for(const l of readline.createInterface({input:process.stdin})){/* never reached */}
+`.replace('for(const l of readline.createInterface({input:process.stdin})){/* never reached */}',`readline.createInterface({input:process.stdin}).on('line',s=>{const c=JSON.parse(s);emit({id:c.id,type:'response',command:c.type,success:true,data:c.type==='get_state'?{sessionId:'fake-uuid',sessionFile:file,isStreaming:false}:c.type==='get_messages'?{messages:[]}:undefined});if(c.type==='prompt')setTimeout(()=>{for(const r of [{type:'agent_start'},{type:'message_start',message:{role:'assistant',content:[]}},{type:'message_update',assistantMessageEvent:{type:'text_delta',contentIndex:0,delta:'hello'}},{type:'message_end',message:{role:'assistant',content:[{type:'text',text:'hello'}],stopReason:'stop'}},{type:'agent_settled'}])emit(r)},400)});`));
+  const port = 32000+Math.floor(Math.random()*10000);
+  const proc = spawn(process.execPath, ['--import','tsx','server/index.ts'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), PI_CONSOLE_DATA_DIR: join(root,'data'), PI_CODING_AGENT_SESSION_DIR: join(root,'sessions'), PI_CONSOLE_PI_COMMAND: cli, PI_CONSOLE_PUBLIC_ORIGIN: '', PI_CONSOLE_ACCESS_TEAM_DOMAIN: '', PI_CONSOLE_ACCESS_AUD: '' }, stdio:'pipe' });
+  let output=''; proc.stdout.on('data',d=>output+=d.toString()); proc.stderr.on('data',d=>output+=d.toString());
+  const base=`http://127.0.0.1:${port}`;
+  const request = async (url:string, data?:object) => { const response=await fetch(base+url,data?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}:{}); const json=await response.json(); assert.ok(response.ok,JSON.stringify(json));return json; };
+  try {
+    const until=Date.now()+15000; while (!output.includes('pi-console http:') && Date.now()<until) await new Promise(r=>setTimeout(r,50)); assert.match(output,/pi-console http:/);
+    assert.equal((await fetch(base+'/api/workspaces',{headers:{'cf-connecting-ip':'203.0.113.7'}})).status,403);
+    const ws=(await request('/api/workspaces',{path:root})).workspace;
+    const other=join(root,'other');await (await import('node:fs/promises')).mkdir(other);
+    const otherWs=(await request('/api/workspaces',{path:other})).workspace;
+    const dirs=await request(`/api/directories?path=${encodeURIComponent(root)}`);
+    assert.ok(dirs.entries.some((entry:any)=>entry.name==='other'));
+    const rejected=await fetch(`${base}/api/directories?path=${encodeURIComponent('\\\\server\\share')}`);
+    assert.equal(rejected.status,400);
+    await request('/api/workspaces/update',{id:ws.id,name:'Pinned project',pinned:true,open:true});
+    const listing=(await request('/api/workspaces')).workspaces;
+    assert.equal(listing[0].name,'Pinned project');assert.equal(listing[0].valid,true);
+    assert.equal((await request(`/api/sessions?workspaceId=${otherWs.id}`)).sessions.length,0);
+    await request('/api/quick-prompts',{prompts:['Review the diff','Run tests']});
+    assert.deepEqual((await request('/api/quick-prompts')).prompts,['Review the diff','Run tests']);
+    const session=(await request('/api/sessions',{workspaceId:ws.id})).session;
+    assert.equal((await request(`/api/sessions?workspaceId=${ws.id}`)).sessions.length,1);
+    assert.deepEqual((await request('/api/activity')).sessions,[]);
+    const options=await request(`/api/session/options?workspaceId=${ws.id}&sessionId=${session.id}`);
+    assert.deepEqual(options.thinkingLevels,['off']);
+    assert.equal((await fetch(`${base}/api/session/model`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceId:ws.id,sessionId:session.id,provider:'',modelId:'m1'})})).status,400);
+    assert.equal((await fetch(`${base}/api/prompt`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceId:ws.id,sessionId:session.id,message:'hi',attachments:[{kind:'text',name:'../bad',mimeType:'text/plain',text:'bad'}]})})).status,400);
+    const events: any[]=[];
+    const response=await fetch(`${base}/api/events?workspaceId=${ws.id}&sessionId=${session.id}`);
+    const reader=response.body!.getReader(); let buffer='';
+    const consume=(async()=>{while(true){const {done,value}=await reader.read();if(done)break;buffer+=new TextDecoder().decode(value);let i;while((i=buffer.indexOf('\n\n'))>=0){const chunk=buffer.slice(0,i);buffer=buffer.slice(i+2);const data=chunk.split('\n').find(s=>s.startsWith('data: '));if(data)events.push(JSON.parse(data.slice(6)))}}})();
+    await request('/api/resume',{workspaceId:ws.id,sessionId:session.id});
+    await request('/api/prompt',{workspaceId:ws.id,sessionId:session.id,message:'hello',attachments:[{kind:'text',name:'note.txt',mimeType:'text/plain',text:'ATTACHMENT_HTTP_OK'}]});
+    const active=(await request('/api/activity')).sessions;
+    assert.equal(active.length,1);assert.equal(active[0].workspaceId,ws.id);assert.equal(active[0].sessionId,session.id);assert.equal(active[0].running,true);assert.equal(active[0].decisionCount,0);
+    const untilDone=Date.now()+5000;while (!events.some(e=>e.type==='RunCompleted')&&Date.now()<untilDone)await new Promise(r=>setTimeout(r,30));
+    assert.ok(events.some(e=>e.type==='MessageDelta'),JSON.stringify(events));assert.ok(events.some(e=>e.type==='RunCompleted'));
+    const resumed=await request('/api/resume',{workspaceId:ws.id,sessionId:session.id});
+    assert.ok(resumed.snapshot.chat.some((m:any)=>m.role==='user'&&m.text.includes('ATTACHMENT_HTTP_OK')));
+    assert.equal(resumed.snapshot.activeRunId,undefined);
+    assert.deepEqual((await request('/api/activity')).sessions,[]);
+    assert.equal((await request(`/api/sessions?workspaceId=${otherWs.id}`)).sessions.length,0);
+    await reader.cancel(); await consume.catch(()=>{});
+  } finally { proc.kill(); await once(proc,'close').catch(()=>{});await rm(root,{recursive:true,force:true}); }
+});

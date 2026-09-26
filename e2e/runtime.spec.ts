@@ -1,0 +1,40 @@
+import { test, expect } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+test('desktop/mobile execution tree observes real Pi tool and canonical history', async ({page,context}) => {
+  await context.grantPermissions(['clipboard-read','clipboard-write']);
+  const cwd = await mkdtemp(join(tmpdir(),'pi-console-browser-'));
+  try {
+    await page.goto('/');
+    await page.getByLabel('Workspace path').fill(cwd);
+    await page.getByRole('button',{name:'Open Workspace'}).click();
+    await page.getByRole('button',{name:'New Session'}).click();
+    await expect(page.getByLabel('runtime state')).toHaveText('running',{timeout:30000});
+    await page.getByLabel('Prompt').fill('Use powershell to run Write-Output PHASE1_BROWSER_OK; Start-Sleep -Seconds 3. Then reply PHASE1_BROWSER_OK.');
+    await page.getByLabel('Prompt').press('Control+Enter');
+    await expect(page.getByLabel('Execution Timeline')).toContainText('running',{timeout:30000});
+    await page.getByRole('button',{name:'Show tool details / metadata'}).first().click();
+    await expect(page.getByLabel('Execution Timeline')).toContainText('powershell',{timeout:120000});
+    await expect(page.getByLabel('Execution Timeline')).toContainText('completed',{timeout:120000});
+    await expect(page.locator('.message[data-role="assistant"]').last()).toContainText('PHASE1_BROWSER_OK',{timeout:120000});
+    await page.locator('.message[data-role="assistant"]').last().getByRole('button',{name:'Copy all'}).click();
+    expect(await page.evaluate(()=>navigator.clipboard.readText())).toContain('PHASE1_BROWSER_OK');
+    await page.getByRole('button',{name:'History / Canonical Events'}).click();
+    await expect(page.getByLabel('Execution Event Log')).toContainText('ToolProgress');
+    await expect(page.getByLabel('Execution Event Log')).toContainText('RunCompleted',{timeout:120000});
+    await page.setViewportSize({width:390,height:780});
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Send',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:/Execution ·/}).click();
+    await expect(page.getByLabel('Execution Event Log')).toBeVisible();
+    await page.getByRole('button',{name:'Tree / Current State'}).click();
+    await expect(page.getByLabel('Execution Timeline')).toContainText('powershell');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
+    const ws=(await (await page.request.get('/api/workspaces')).json()).workspaces.find((w: any) => w.path === cwd);
+    const sid=(await (await page.request.get(`/api/sessions?workspaceId=${ws.id}`)).json()).sessions[0].id;
+    const closed=await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:sid}});
+    expect(closed.ok()).toBeTruthy();
+  } finally { await rm(cwd,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(() => {}); }
+});

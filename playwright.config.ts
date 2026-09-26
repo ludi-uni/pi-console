@@ -1,0 +1,2 @@
+import { defineConfig } from '@playwright/test';
+export default defineConfig({ testDir: './e2e', timeout: 150000, use: { baseURL: 'http://127.0.0.1:31718', browserName: 'chromium', channel: 'chrome', headless: true }, webServer: { command: 'npm start', url: 'http://127.0.0.1:31718', env: { PORT: '31718', PI_CONSOLE_DATA_DIR: '.pi-console/e2e', PI_CONSOLE_PUBLIC_ORIGIN: '', PI_CONSOLE_ACCESS_TEAM_DOMAIN: '', PI_CONSOLE_ACCESS_AUD: '' }, reuseExistingServer: false, timeout: 30000 } });

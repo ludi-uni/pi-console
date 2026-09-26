@@ -1,0 +1,68 @@
+import { test, expect } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+test('settings: sections, local preferences, mobile browser Back through session hierarchy', async ({page})=>{
+  await page.setViewportSize({width:390,height:780});
+  const cwd=await mkdtemp(join(tmpdir(),'pi-console-settings-'));
+  try{
+    await page.goto('/');
+    await page.getByRole('button',{name:'Open settings'}).click();
+    await expect(page.getByRole('region',{name:'Settings'})).toBeVisible();
+    await page.getByRole('button',{name:'Language'}).click();
+    await page.getByLabel('Display language').selectOption('ja');
+    await expect(page.getByRole('heading',{name:'言語',level:3})).toBeVisible();
+    await page.getByRole('button',{name:'← 設定'}).click();
+    await page.getByRole('button',{name:'アプリの概要'}).click();
+    await expect(page.getByRole('heading',{name:'アプリの概要',level:3})).toBeVisible();
+    await expect(page.getByText('Pi Console は Pi 用のローカル優先 Web コンソールです。',{exact:false})).toBeVisible();
+    const notices=await page.request.get('/third-party-notices');expect(notices.ok()).toBeTruthy();expect(await notices.text()).toContain('react-dom');
+    await page.getByRole('button',{name:'← 設定'}).click();
+    await page.getByRole('button',{name:'見た目'}).click();
+    await page.getByLabel('Color palette').selectOption('graphite');
+    await expect.poll(()=>page.locator('html').getAttribute('data-appearance')).toBe('graphite');
+    await page.getByRole('button',{name:'← 設定'}).click();
+    await page.getByRole('button',{name:'ペット'}).click();
+    const found=(await (await page.request.get('/api/pets')).json()).pets;
+    await page.getByLabel('Show companion').check();
+    if(found.length){await expect(page.getByRole('img',{name:/companion · idle/})).toBeVisible();await expect.poll(()=>page.locator('.pet-widget canvas').evaluate(el=>{const c=el as HTMLCanvasElement;return [...(c.getContext('2d')?.getImageData(0,0,c.width,c.height).data??[])].some((v,i)=>i%4===3&&v>0)})).toBe(true);await expect(page.getByLabel('Pet package')).toBeEnabled();await page.getByLabel('Pet package').selectOption(found[0].id);await page.getByLabel('Pet scale').selectOption('0.75');const sheet=await page.request.get(`/api/pet/file?pet=${encodeURIComponent(found[0].id)}&file=pet.json`);expect(sheet.ok()).toBeTruthy();expect((await sheet.json()).spritesheetPath).toMatch(/\.(webp|png)$/);const blocked=await page.request.get('/api/pet/file?pet=..&file=..%2Fsecret');expect(blocked.ok()).toBeFalsy();}
+    else await expect(page.getByText('このサーバーにはペットが見つかりません。')).toBeVisible();
+    await page.getByRole('button',{name:'← 設定'}).click();
+    await page.getByRole('button',{name:'セッション'}).click();
+    await page.getByLabel('Default session view').selectOption('execution');
+    await page.screenshot({path:join(tmpdir(),'pi-console-settings-mobile.png'),fullPage:true});
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:join(tmpdir(),'pi-console-settings-desktop.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:780});
+    await page.reload();
+    await page.getByRole('button',{name:'セッション'}).click();
+    await expect(page.getByLabel('Default session view')).toHaveValue('execution');
+    await page.getByRole('button',{name:'← 設定'}).click();
+    await page.getByRole('button',{name:'← 戻る'}).click();
+    await page.getByLabel('Workspace path').fill(cwd);
+    await page.getByRole('button',{name:'Add & open'}).click();
+    await expect(page.getByRole('button',{name:'New Session'})).toBeVisible();
+    await page.getByRole('button',{name:'New Session'}).click();
+    await expect(page.getByLabel('Execution Timeline')).toBeVisible();
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    await page.setViewportSize({width:320,height:700});
+    await page.screenshot({path:join(tmpdir(),'pi-console-compact-chat-mobile.png'),fullPage:true});
+    await expect(page.getByRole('button',{name:'Send',exact:true})).toBeVisible();
+    expect(await page.getByRole('button',{name:'Send',exact:true}).evaluate(el=>el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(await page.getByRole('navigation',{name:'Session views'}).evaluate(el=>el.getBoundingClientRect().top));
+    if(found.length)await expect.poll(async()=>{const pet=await page.locator('.pet-widget').boundingBox();const composer=await page.locator('.composer-dock').boundingBox();return !!pet&&!!composer&&pet.y+pet.height<=composer.y+1}).toBe(true);
+    await page.goBack();
+    await expect(page.getByLabel('Execution Timeline')).toBeVisible();
+    await page.goBack();
+    await expect(page.getByLabel('Search sessions')).toBeVisible();
+    await page.goBack();
+    await expect(page.getByRole('heading',{name:'Workspaces'})).toBeVisible();
+    await page.goForward();
+    await expect(page.getByLabel('Search sessions')).toBeVisible();
+    await page.getByLabel('Session list').getByRole('button').first().click();
+    await expect(page.getByLabel('Execution Timeline')).toBeVisible();
+    const ws=(await (await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===cwd);
+    const sessions=(await (await page.request.get(`/api/sessions?workspaceId=${ws.id}`)).json()).sessions;
+    for(const item of sessions)await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:item.id}});
+  }finally{await rm(cwd,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{})}
+});

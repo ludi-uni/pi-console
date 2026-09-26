@@ -1,0 +1,9 @@
+{"type":"agent_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}],"stopReason":"toolUse"}}
+{"type":"tool_execution_start","toolCallId":"call-demo","toolName":"powershell","args":{"command":"Write-Output PHASE0_OK"}}
+{"type":"tool_execution_update","toolCallId":"call-demo","toolName":"powershell","partialResult":{"content":[{"type":"text","text":"PHASE0"}]}}
+{"type":"tool_execution_end","toolCallId":"call-demo","toolName":"powershell","result":{"content":[{"type":"text","text":"PHASE0_OK"}]},"isError":false}
+{"type":"agent_end","willRetry":false}
+{"type":"agent_settled"}
