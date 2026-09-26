@@ -146,6 +146,16 @@ export class RuntimeManager {
         Number.isFinite(Date.parse(bound.createdAt)) && Date.parse(bound.createdAt) >= Date.parse(job.startedAt)) job.runId = bound.id;
     return { available: !!kit, ...(job?.workspaceId === workspaceId ? { job } : {}) };
   }
+  async inspectSubagent(workspaceId: string, sessionId: string, nodeId: unknown) {
+    if (typeof nodeId !== 'string' || nodeId.length > 1024) throw new Error('invalid subagent node');
+    const { worker, state } = await this.open(workspaceId, sessionId);
+    const node = state.execution.snapshot().nodes.find(n => n.id === nodeId && n.sourceKind === 'pi-subagents' && n.id.startsWith('pi-subagent-async:'));
+    if (!node) throw new Error('background subagent is not available in this session');
+    let path: unknown;
+    try { path = JSON.parse(node.id.slice('pi-subagent-async:'.length)); } catch { throw new Error('invalid subagent node'); }
+    if (!Array.isArray(path) || path.length < 1 || path.length > 2 || path.some(id => typeof id !== 'string') || node.nativeId !== path.at(-1)) throw new Error('unsupported subagent node');
+    return worker.inspectSubagent(path[0], path[1]);
+  }
   async startOrchestrator(workspaceId: string, sessionId: string, request: unknown) {
     if (typeof request !== 'string' || !request.trim() || request.length > 20000) throw new Error('orchestrator request must be 1–20000 characters');
     const kit = await orchestratorKit();

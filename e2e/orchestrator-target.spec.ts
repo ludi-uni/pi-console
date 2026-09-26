@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('selected kit target sends exact request without a Pi prompt and shows run status',async({page})=>{
+test('mobile Execution starts a kit run without a Pi prompt and keeps Chat clear',async({page})=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-orch-target-'));
   let job: {running:boolean;request:string;runId?:string}|undefined;
   let piPrompts=0;
@@ -16,14 +16,27 @@ test('selected kit target sends exact request without a Pi prompt and shows run 
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
-    await expect(page.getByLabel('Send with')).toBeVisible();
-    await page.getByLabel('Send with').selectOption('kit');
-    await page.getByLabel('Prompt',{exact:true}).fill('Build a small plan');
-    await page.getByRole('button',{name:'Send',exact:true}).click();
+    await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
+    await page.getByRole('button',{name:/Execution ·/}).click();
     await expect(page.getByLabel('Execution Timeline')).toBeVisible();
+    await page.getByLabel('Orchestrator request').fill('Build a small plan');
+    await page.getByRole('button',{name:'Start orchestrator run'}).click();
     const card=page.getByRole('status',{name:'Orchestrator run status'});
     await expect(card).toContainText('Waiting for the first task update');
     await expect(card).toHaveCount(1);
+    await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
+    await expect(page.getByRole('button',{name:'Execution · 1'})).toBeVisible();
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    await expect(card).not.toBeVisible();
+    await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
+    await expect(page.getByLabel('Chat output')).not.toContainText('Build a small plan');
+    await expect(page.getByText('This session’s Pi chat is paused until the orchestrator run finishes.')).toBeVisible();
+    await expect(page.getByLabel('Prompt',{exact:true})).toBeDisabled();
+    job!.running=false;
+    await expect(page.getByLabel('Prompt',{exact:true})).toBeEnabled({timeout:7000});
+    await expect(page.getByText('This session’s Pi chat is paused until the orchestrator run finishes.')).not.toBeVisible();
+    await page.getByRole('button',{name:/Execution ·/}).click();
+    await expect(page.getByLabel('Orchestrator request')).toBeVisible();
     expect(piPrompts).toBe(0);
     const ws=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:any)=>w.path===root);
     for(const s of (await(await page.request.get(`/api/sessions?workspaceId=${ws.id}`)).json()).sessions)await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:s.id}});
@@ -49,13 +62,13 @@ test('long kit request stays collapsed while verified current tasks remain reada
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
-    await expect(page.getByLabel('Send with')).toBeVisible();
-    await page.getByLabel('Send with').selectOption('kit');
-    await page.getByLabel('Prompt',{exact:true}).fill(request);
-    await page.getByRole('button',{name:'Send',exact:true}).click();
+    await expect(page.getByLabel('Orchestrator request')).toBeVisible();
+    await page.getByLabel('Orchestrator request').fill(request);
+    await page.getByRole('button',{name:'Start orchestrator run'}).click();
     const card=page.getByRole('status',{name:'Orchestrator run status'});
     await expect(card).toHaveCount(1);
     await expect(card).toContainText('1/2 tasks done · 1 running · 1 agent running');
+    await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
     await expect(card).toContainText('Analyze preferences and current UX');
     await expect(card).not.toContainText('Unrelated previous work');
     await expect(page.locator('.timeline .execution-node').first()).toContainText('Orchestrator current');
@@ -67,6 +80,8 @@ test('long kit request stays collapsed while verified current tasks remain reada
     await card.getByText('Full request').click();
     await expect(card.getByText(request,{exact:true})).toBeVisible();
     await page.setViewportSize({width:390,height:780});
+    await expect(card).not.toBeVisible();
+    await page.getByRole('button',{name:/Execution ·/}).click();
     await expect(card).toBeVisible();
     await page.screenshot({path:join(tmpdir(),'pi-console-kit-summary-mobile.png'),fullPage:true});
     const ws=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:any)=>w.path===root);
