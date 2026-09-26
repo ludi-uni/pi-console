@@ -35,6 +35,23 @@ test('real Pi-shaped fixture normalizes stream, tools and settled (not agent_end
   assert.equal(state.activeRunId, undefined);
   assert.ok(events.every((e, i) => e.seq === i+1 && e.sessionId === 'sid'));
 });
+test('detached child completion wakes the parent without an HTTP prompt and projects its continuation', () => {
+  const state = new SessionEvents(session, () => 'running');
+  state.ingest({type:'agent_start'});
+  assert.ok(state.activeRunId);
+  const run=state.activeRunId;
+  state.ingest({type:'message_start',message:{role:'assistant',content:[]}});
+  state.ingest({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'Continuing after worker',contentIndex:0}});
+  state.ingest({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Continuing after worker'}],stopReason:'stop'}});
+  state.ingest({type:'agent_settled'});
+  assert.deepEqual(state.events.map(e=>e.type),['RunStarted','MessageStarted','MessageDelta','MessageCompleted','AgentSettled','RunCompleted']);
+  assert.equal(state.events.find(e=>e.type==='MessageCompleted')?.runId,run);
+  assert.equal(state.snapshot().chat.at(-1)?.text,'Continuing after worker');
+  assert.equal(state.activeRunId,undefined);
+  // A later notification can start another run, not reuse the completed identity.
+  state.ingest({type:'agent_start'});
+  assert.notEqual(state.activeRunId,run);
+});
 test('tool preview is bounded, single-line, and only from explicit known argument fields',()=>{
   assert.equal(previewToolInput({command:'node run.js\n --check'}),'node run.js --check');
   assert.equal(previewToolInput({program:'python',args:['secret']}),'python');

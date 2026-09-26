@@ -88,7 +88,11 @@ export class SessionEvents {
     if (raw.type === 'console_dialog_cancelled') { this.emit('ErrorEvent', 'extension-ui', { summary: `Unsupported ${raw.method} dialog cancelled` }, { source: 'console' }); return; }
     if (raw.type === 'extension_error') { this.emit('ErrorEvent', 'extension', { summary: summary(raw.error) }); return; }
     if (raw.type === 'response') { if (raw.success === false) this.emit('ErrorEvent', 'rpc', { summary: summary(raw.error) }, { status: 'failed' }); return; }
-    if (raw.type === 'agent_start') this.begin();
+    if (raw.type === 'agent_start') {
+      // An extension may resume Pi after a detached child finishes, without an HTTP prompt.
+      if (!this.activeRunId && !this.pendingRunId) { this.pendingRunId = randomUUID(); this.failure = undefined; this.stopped = false; }
+      this.begin();
+    }
     if (raw.type === 'agent_settled') {
       if (this.pendingRunId) this.begin();
       if (this.activeRunId) {
