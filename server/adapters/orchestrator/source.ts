@@ -10,7 +10,10 @@ const safe = (value: unknown, max = 240): string | undefined => typeof value ===
 const mapStatus = (v: unknown): ExecutionStatus => ({ pending:'queued', waiting_for_user:'waiting', needs_user:'waiting', running:'running', blocked:'blocked', completed:'completed', finished:'completed', failed:'failed', cancelled:'cancelled' } as Record<string,ExecutionStatus>)[String(v)] ?? 'unknown';
 export async function kitRoot(): Promise<string | undefined> {
   if (process.env.PI_CONSOLE_KIT_ROOT) return resolve(process.env.PI_CONSOLE_KIT_ROOT);
-  try { const file = await fs.realpath(join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(),'.pi','agent'), 'extensions','ludi-orchestrator','index.js')); return resolve(dirname(file),'../../..'); } catch { return; }
+  const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(),'.pi','agent');
+  try { const file = await fs.realpath(join(agentDir, 'extensions','ludi-orchestrator','index.js')); return resolve(dirname(file),'../../..'); } catch { /* The kit may be installed as a Pi npm package instead. */ }
+  const npmRoot = join(agentDir, 'npm','node_modules','@ludi-uni','ludi-agent-kit');
+  try { await fs.access(join(npmRoot,'adapters','pi','orchestrator-ext','index.js')); return await fs.realpath(npmRoot); } catch { return; }
 }
 export type OrchestratorRead = { snapshot: Raw; run?: Raw; tasks: Raw[]; decisions: Raw[]; trace: Raw[] };
 export async function readBoundOrchestrator(root: string, sessionId: string, workspacePath: string, storePath?: string): Promise<OrchestratorRead | undefined> {

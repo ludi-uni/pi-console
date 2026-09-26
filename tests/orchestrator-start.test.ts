@@ -3,7 +3,28 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { startKitRun } from '../server/adapters/orchestrator/start.ts';
+import { orchestratorKit, startKitRun } from '../server/adapters/orchestrator/start.ts';
+import { kitRoot } from '../server/adapters/orchestrator/source.ts';
+
+test('discovers the official Pi npm kit when the legacy extension junction is absent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-kit-discovery-'));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  const override = process.env.PI_CONSOLE_KIT_ROOT;
+  try {
+    process.env.PI_CODING_AGENT_DIR = root;
+    delete process.env.PI_CONSOLE_KIT_ROOT;
+    assert.equal(await kitRoot(), undefined);
+    const kit = join(root,'npm','node_modules','@ludi-uni','ludi-agent-kit');
+    for (const path of ['adapters/pi/orchestrator-ext','adapters/pi/lib','lib/orchestrator']) await mkdir(join(kit,path),{recursive:true});
+    for (const path of ['adapters/pi/orchestrator-ext/index.js','adapters/pi/lib/invoke.mjs','adapters/pi/lib/subagent.mjs','lib/orchestrator/api.mjs']) await writeFile(join(kit,path),'');
+    assert.equal(await kitRoot(),kit);
+    assert.equal(await orchestratorKit(),kit);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    if (override === undefined) delete process.env.PI_CONSOLE_KIT_ROOT; else process.env.PI_CONSOLE_KIT_ROOT = override;
+    await rm(root,{recursive:true,force:true});
+  }
+});
 
 test('kit start uses exact session/workspace binding, leaves model execution to kit and closes store', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-console-kit-'));
