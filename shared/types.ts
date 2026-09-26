@@ -17,5 +17,5 @@ export interface SessionOptions { models: { provider: string; id: string; name: 
 export interface ChatMessage { id: string; role: 'user' | 'assistant'; text: string; complete: boolean }
 export interface Workspace { id: string; name: string; path: string; pinned: boolean; lastOpenedAt: string; valid?: boolean }
 export interface SessionInfo { id: string; workspaceId: string; filePath: string; name?: string; updatedAt?: string; running?: boolean; decisionCount?: number }
-export interface ActiveSessionSummary { sessionId: string; workspaceId: string; sessionName: string; workspaceName: string; running: boolean; decisionCount: number; updatedAt: string }
+export interface ActiveSessionSummary { sessionId: string; workspaceId: string; sessionName: string; workspaceName: string; running: boolean; decisionCount: number; updatedAt: string; work: { id: string; label: string; status: ExecutionStatus; kind: ExecutionNodeKind; action?: string }[]; completion?: { id: string; status: 'completed' | 'failed' | 'cancelled' | 'interrupted'; at: string } }
 export interface Snapshot { session: SessionInfo; runtime: ProcessState; activeRunId?: string; chat: ChatMessage[]; events: ExecutionEvent[]; execution: ExecutionStateSnapshot; seq: number }

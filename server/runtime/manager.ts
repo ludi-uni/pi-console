@@ -14,7 +14,7 @@ export class RuntimeManager {
   private failed = new Map<string, Active>();
   private starting = new Map<string, Promise<Active>>();
   private retiring = new Set<string>();
-  private kitRuns = new Map<string, { workspaceId: string; running: boolean; request: string; runId?: string; error?: string }>();
+  private kitRuns = new Map<string, { workspaceId: string; running: boolean; request: string; runId?: string; error?: string; finishedAt?: string }>();
   constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir()) {}
   get sessionRoot(){return this.sessionsRoot}
   async sessions(workspaceId: string) {
@@ -22,14 +22,29 @@ export class RuntimeManager {
     for (const active of this.active.values()) if (active.session.workspaceId === workspaceId && !files.some(s => s.id === active.session.id)) files.unshift(active.session);
     return files.map(s=>{const entry=this.active.get(s.id);const execution=entry?.state.execution.snapshot();return {...s,running:!!entry?.state.activeRunId||!!execution?.nodes.some(n=>n.status==='running'),decisionCount:execution?.decisionCount??0}}).sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(!!b.running)-Number(!!a.running)||(b.updatedAt??'').localeCompare(a.updatedAt??''));
   }
-  activity(): ActiveSessionSummary[] {
+  async activity(): Promise<ActiveSessionSummary[]> {
     const result:ActiveSessionSummary[]=[];
     for(const entry of this.active.values()){
       const execution=entry.state.execution.snapshot();
-      const running=!!entry.state.activeRunId||execution.nodes.some(n=>n.status==='running');
-      if(!running&&!execution.decisionCount)continue;
+      const job=this.kitRuns.get(entry.session.id);
+      const kitRunning=job?.workspaceId===entry.session.workspaceId && job.running;
+      const liveWork=execution.nodes.filter(n=>['agent','task','orchestrator'].includes(n.kind)&&['running','waiting','blocked'].includes(n.status));
+      const recentWork=execution.nodes.filter(n=>['agent','task'].includes(n.kind)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&Date.now()-Date.parse(n.endedAt??n.updatedAt)<24*60*60*1000)
+        .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,2);
+      const work=[...liveWork,...recentWork].map(n=>({id:n.id,label:n.label,status:n.status,kind:n.kind,action:n.action}));
+      if(kitRunning&&!work.some(n=>n.kind==='orchestrator'))work.unshift({id:`kit:${entry.session.id}`,label:'Orchestrator',status:'running',kind:'orchestrator',action:undefined});
+      const running=!!entry.state.activeRunId||!!kitRunning||work.some(n=>n.status==='running')||execution.nodes.some(n=>n.status==='running'&&n.kind==='tool');
+      const completed=execution.nodes.filter(n=>['run','orchestrator'].includes(n.kind)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&n.endedAt)
+        .sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
+      const rootCompletion=completed?.endedAt?{id:completed.id+':'+completed.endedAt,status:completed.status as 'completed'|'failed'|'cancelled'|'interrupted',at:completed.endedAt}:undefined;
+      const jobCompletion=job?.finishedAt?{id:`kit:${entry.session.id}:${job.finishedAt}`,status:job.error?'failed' as const:'completed' as const,at:job.finishedAt}:undefined;
+      const latest=[rootCompletion,jobCompletion].filter((v):v is NonNullable<typeof v>=>!!v).sort((a,b)=>b.at.localeCompare(a.at))[0];
+      const completion=latest&&Date.now()-Date.parse(latest.at)<24*60*60*1000?latest:undefined;
+      if(!running&&!execution.decisionCount&&!completion)continue;
       const workspace=this.workspaces.get(entry.session.workspaceId);
-      result.push({sessionId:entry.session.id,workspaceId:workspace.id,sessionName:entry.session.name??'New conversation',workspaceName:workspace.name,running,decisionCount:execution.decisionCount,updatedAt:entry.state.events.at(-1)?.timestamp??entry.session.updatedAt??workspace.lastOpenedAt});
+      const current=await readSession(entry.session.filePath,workspace);
+      if(current?.name)entry.session.name=current.name;
+      result.push({sessionId:entry.session.id,workspaceId:workspace.id,sessionName:entry.session.name??'New conversation',workspaceName:workspace.name,running,decisionCount:execution.decisionCount,work,completion,updatedAt:entry.state.events.at(-1)?.timestamp??entry.session.updatedAt??workspace.lastOpenedAt});
     }
     return result.sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(b.running)-Number(a.running)||b.updatedAt.localeCompare(a.updatedAt)).slice(0,100);
   }
@@ -135,9 +150,9 @@ export class RuntimeManager {
     const { state } = await this.open(workspaceId, sessionId);
     if (state.busy || this.kitRuns.get(sessionId)?.running) throw new Error('Pi session or orchestrator is busy');
     const workspace = this.workspaces.get(workspaceId);
-    const job = { workspaceId, running: true, request: request.trim(), runId: undefined as string | undefined, error: undefined as string | undefined };
+    const job = { workspaceId, running: true, request: request.trim(), runId: undefined as string | undefined, error: undefined as string | undefined, finishedAt: undefined as string | undefined };
     this.kitRuns.set(sessionId, job);
-    void startKitRun(kit, sessionId, workspace.path, job.request).then(id => { job.runId = id; job.running = false; }, error => { job.error = (error as Error).message; job.running = false; });
+    void startKitRun(kit, sessionId, workspace.path, job.request).then(id => { job.runId = id; job.running = false; job.finishedAt = new Date().toISOString(); }, error => { job.error = (error as Error).message; job.running = false; job.finishedAt = new Date().toISOString(); });
     return { job };
   }
   async prompt(workspaceId: string, sessionId: string, message: unknown, attachments: unknown = []): Promise<string> {

@@ -44,14 +44,16 @@ test('HTTP server ↔ Pi adapter session lifecycle and canonical SSE', { timeout
     const consume=(async()=>{while(true){const {done,value}=await reader.read();if(done)break;buffer+=new TextDecoder().decode(value);let i;while((i=buffer.indexOf('\n\n'))>=0){const chunk=buffer.slice(0,i);buffer=buffer.slice(i+2);const data=chunk.split('\n').find(s=>s.startsWith('data: '));if(data)events.push(JSON.parse(data.slice(6)))}}})();
     await request('/api/resume',{workspaceId:ws.id,sessionId:session.id});
     await request('/api/prompt',{workspaceId:ws.id,sessionId:session.id,message:'hello',attachments:[{kind:'text',name:'note.txt',mimeType:'text/plain',text:'ATTACHMENT_HTTP_OK'}]});
+    await (await import('node:fs/promises')).appendFile(session.filePath,JSON.stringify({type:'session_info',name:'Renamed task'})+'\n');
     const active=(await request('/api/activity')).sessions;
-    assert.equal(active.length,1);assert.equal(active[0].workspaceId,ws.id);assert.equal(active[0].sessionId,session.id);assert.equal(active[0].running,true);assert.equal(active[0].decisionCount,0);
+    assert.equal(active.length,1);assert.equal(active[0].workspaceId,ws.id);assert.equal(active[0].sessionId,session.id);assert.equal(active[0].sessionName,'Renamed task');assert.equal(active[0].running,true);assert.equal(active[0].decisionCount,0);
     const untilDone=Date.now()+5000;while (!events.some(e=>e.type==='RunCompleted')&&Date.now()<untilDone)await new Promise(r=>setTimeout(r,30));
     assert.ok(events.some(e=>e.type==='MessageDelta'),JSON.stringify(events));assert.ok(events.some(e=>e.type==='RunCompleted'));
     const resumed=await request('/api/resume',{workspaceId:ws.id,sessionId:session.id});
     assert.ok(resumed.snapshot.chat.some((m:any)=>m.role==='user'&&m.text.includes('ATTACHMENT_HTTP_OK')));
     assert.equal(resumed.snapshot.activeRunId,undefined);
-    assert.deepEqual((await request('/api/activity')).sessions,[]);
+    const finished=(await request('/api/activity')).sessions;
+    assert.equal(finished.length,1);assert.equal(finished[0].sessionName,'Renamed task');assert.equal(finished[0].running,false);assert.equal(finished[0].completion.status,'completed');
     assert.equal((await request(`/api/sessions?workspaceId=${otherWs.id}`)).sessions.length,0);
     await reader.cancel(); await consume.catch(()=>{});
   } finally { proc.kill(); await once(proc,'close').catch(()=>{});await rm(root,{recursive:true,force:true}); }

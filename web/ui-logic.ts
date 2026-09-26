@@ -1,4 +1,12 @@
-import type { SessionInfo, Workspace } from '../shared/types.ts';
+import type { SessionInfo, Workspace, ExecutionEvent } from '../shared/types.ts';
+/** The banner is transient; older failures remain available in Execution history. */
+export function recentIssue(events: ExecutionEvent[], dismissed: readonly string[], now = Date.now()): ExecutionEvent | undefined {
+  let issue: ExecutionEvent | undefined;
+  for (let i = events.length - 1; i >= 0; i--) if (['RunFailed','ToolFailed','ErrorEvent'].includes(events[i].type)) { issue = events[i]; break; }
+  if (!issue || dismissed.includes(issue.eventId) || !Number.isFinite(Date.parse(issue.timestamp)) || now - Date.parse(issue.timestamp) >= 10 * 60_000) return;
+  if (events.some(e => e.seq > issue.seq && e.type === 'RunCompleted')) return;
+  return issue;
+}
 export function groupWorkspaces(items: Workspace[], query: string) {
   const filtered=items.filter(w=>`${w.name} ${w.path}`.toLowerCase().includes(query.toLowerCase()));
   const pinned=filtered.filter(w=>w.pinned).sort((a,b)=>b.lastOpenedAt.localeCompare(a.lastOpenedAt));

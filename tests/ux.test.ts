@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceStore, readSession, listSessions } from '../server/runtime/workspaces.ts';
-import { groupWorkspaces, filterSessions, connectionLabel, validQuickPrompts } from '../web/ui-logic.ts';
+import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts } from '../web/ui-logic.ts';
+import type { ExecutionEvent } from '../shared/types.ts';
 import { splitCode } from '../web/ChatMessage.tsx';
 
 test('workspace metadata migrates old array, validates missing path, pin/rename/recent and prompts persist',async()=>{
@@ -36,6 +37,17 @@ test('session title fallback, recent ordering, search and running first',async()
     const running=found.map(s=>({...s,running:s.id==='a'}));assert.equal(filterSessions(running,'FIX')[0].id,'a');assert.equal(filterSessions(running,'')[0].id,'a');
     assert.equal(filterSessions(running.map(s=>({...s,decisionCount:s.id==='b'?1:0})),'')[0].id,'b');
   }finally{await rm(root,{recursive:true,force:true})}
+});
+test('Recent issue clears on success, dismissal or expiry; newer failures remain visible',()=>{
+  const now=Date.parse('2026-01-01T12:00:00Z');
+  const event=(seq:number,type:ExecutionEvent['type'],minutesAgo:number):ExecutionEvent=>({schemaVersion:1,eventId:`event-${seq}`,seq,timestamp:new Date(now-minutesAgo*60_000).toISOString(),workspaceId:'w',sessionId:'s',runId:'r',type,entityId:'r',source:'pi-rpc',certainty:'observed',payload:{}});
+  const failed=event(1,'ToolFailed',2),success=event(2,'RunCompleted',1),newFailure=event(3,'RunFailed',0);
+  assert.equal(recentIssue([failed],[],now)?.eventId,failed.eventId);
+  assert.equal(recentIssue([failed,success],[],now),undefined);
+  assert.equal(recentIssue([failed,success,newFailure],[],now)?.eventId,newFailure.eventId);
+  assert.equal(recentIssue([failed,success,newFailure],[newFailure.eventId],now),undefined);
+  assert.equal(recentIssue([event(4,'RunFailed',11)],[],now),undefined);
+  assert.equal(recentIssue([event(4,'RunFailed',11),event(5,'ToolFailed',1)],[],now)?.eventId,'event-5');
 });
 test('quick prompts, code fences and connection states are deterministic',()=>{
   assert.equal(validQuickPrompts(['Edit this']),true);assert.equal(validQuickPrompts(Array(9).fill('x')),false);

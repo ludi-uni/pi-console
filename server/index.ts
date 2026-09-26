@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { listDirectories } from './runtime/directories.ts';
 import { listPets, petFile } from './runtime/pets.ts';
 import { RuntimeManager } from './runtime/manager.ts';
+import { orchestratorSettings, updateOrchestratorSettings } from './adapters/orchestrator/settings.ts';
 import { SessionRecycling } from './runtime/session-recycling.ts';
 import { startupStatus, setStartup } from '../package/startup-manager.mjs';
 import { WorkspaceStore } from './runtime/workspaces.ts';
@@ -42,7 +43,7 @@ const server = createServer(async (req, res) => {
     const wid = url.searchParams.get('workspaceId') ?? '';
     const sid = url.searchParams.get('sessionId') ?? '';
     if (req.method === 'GET' && url.pathname === '/api/workspaces') return respond(res, 200, { workspaces: await store.listWithValidity() });
-    if (req.method === 'GET' && url.pathname === '/api/activity') return respond(res, 200, { sessions: runtime.activity() });
+    if (req.method === 'GET' && url.pathname === '/api/activity') return respond(res, 200, { sessions: await runtime.activity() });
     if (req.method === 'GET' && url.pathname === '/api/startup') return respond(res,200,await startupStatus());
     if (req.method === 'POST' && url.pathname === '/api/startup') {const b=await body(req);return respond(res,200,await setStartup(b.enabled))}
     if (req.method === 'GET' && url.pathname === '/api/session-retention') return respond(res,200,recycling.settings());
@@ -62,6 +63,8 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/session/options') return respond(res, 200, await runtime.options(wid, sid));
     if (req.method === 'POST' && url.pathname === '/api/session/model') { const b = await body(req); return respond(res, 200, await runtime.setModel(b.workspaceId, b.sessionId, b.provider, b.modelId)); }
     if (req.method === 'POST' && url.pathname === '/api/session/thinking') { const b = await body(req); return respond(res, 200, await runtime.setThinking(b.workspaceId, b.sessionId, b.level)); }
+    if (req.method === 'GET' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await orchestratorSettings());
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await updateOrchestratorSettings(await body(req)));
     if (req.method === 'GET' && url.pathname === '/api/orchestrator') return respond(res, 200, await runtime.kitStatus(wid, sid));
     if (req.method === 'POST' && url.pathname === '/api/orchestrator/start') { const b = await body(req); return respond(res, 202, await runtime.startOrchestrator(b.workspaceId, b.sessionId, b.request)); }
     if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await body(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? []) }); }
