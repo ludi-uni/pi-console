@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { promises as fs } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listDirectories } from './runtime/directories.ts';
+import { listDirectories, createDirectory } from './runtime/directories.ts';
 import { listPets, petFile } from './runtime/pets.ts';
 import { RuntimeManager } from './runtime/manager.ts';
 import { orchestratorSettings, updateOrchestratorSettings } from './adapters/orchestrator/settings.ts';
@@ -52,6 +52,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/workspaces/update') { const b=await body(req);return respond(res,200,{workspace:await store.update(b.id,{name:b.name,pinned:b.pinned,open:b.open})}); }
     if (req.method === 'POST' && url.pathname === '/api/workspaces/remove') { const b=await body(req);await runtime.removeWorkspace(b.id);return respond(res,200,{ok:true}); }
     if (req.method === 'GET' && url.pathname === '/api/directories') return respond(res, 200, await listDirectories(url.searchParams.get('path') ?? undefined));
+    if (req.method === 'POST' && url.pathname === '/api/directories/create') { const b = await body(req); return respond(res, 200, await createDirectory(b.parent, b.name)); }
     if (req.method === 'GET' && url.pathname === '/api/pets') return respond(res,200,{pets:await listPets()});
     if (req.method === 'GET' && url.pathname === '/api/pet/file') {try{const {data,mime}=await petFile(url.searchParams.get('pet')??'',url.searchParams.get('file')??'');res.writeHead(200,{'content-type':mime,'cache-control':'private, max-age=300'});res.end(data);return;}catch{return respond(res,404,{error:'pet not found'});}}
     if (req.method === 'GET' && url.pathname === '/api/quick-prompts') return respond(res,200,{prompts:store.quickPrompts()});

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { listDirectories } from '../server/runtime/directories.ts';
+import { listDirectories, createDirectory } from '../server/runtime/directories.ts';
 
 test('absent or empty path returns safe roots (home, cwd, drive roots)', async () => {
   for (const result of [await listDirectories(), await listDirectories('   ')]) {
@@ -68,6 +68,30 @@ test('scanning and results are bounded; truncation flagged', async () => {
   const result = await listDirectories(root);
   assert.equal(result.entries.length, 200);
   assert.equal(result.truncated, true);
+});
+
+test('create folder under a canonical local parent, then navigate to it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-console-create-'));
+  try {
+    const created = await createDirectory(root, 'new project');
+    assert.equal(created.path, realpathSync(join(root, 'new project')));
+    assert.equal((await listDirectories(root)).entries.find(entry => entry.name === 'new project')?.path, created.path);
+    await assert.rejects(createDirectory(root, 'new project'), { code: 'EEXIST' });
+    assert.ok(existsSync(created.path));
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});
+
+test('create rejects path traversal, reserved names and non-local parents without writing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-console-create-'));
+  try {
+    for (const name of ['.', '..', '../escape', 'nested\\escape', 'C:drive', 'name/child', 'CON', 'con.txt', 'LPT1.log', 'trailing.', 'trailing ', '', 'bad|name', '  ']) {
+      await assert.rejects(createDirectory(root, name), /invalid folder name or parent/);
+    }
+    for (const parent of ['.', '\\\\server\\share', 'C:drive-relative', '']) {
+      await assert.rejects(createDirectory(parent, 'safe'), /invalid folder name or parent/);
+    }
+    assert.deepEqual((await listDirectories(root)).entries, []);
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });
 
 test('root listing deduplicates paths and stays bounded', async () => {

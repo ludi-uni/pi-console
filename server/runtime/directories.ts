@@ -36,6 +36,19 @@ async function roots(): Promise<DirectoryEntry[]> {
   return entries;
 }
 
+export async function createDirectory(parent: unknown, name: unknown): Promise<{ path: string }> {
+  if (typeof parent !== 'string' || !DRIVE_PATH.test(parent) || typeof name !== 'string' || !name || name.length > 120 ||
+      name === '.' || name === '..' || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) ||
+      /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw new Error('invalid folder name or parent');
+  const listing = await listDirectories(parent);
+  if (!listing.path) throw new Error('absolute parent folder required');
+  const path = join(listing.path, name);
+  await fs.mkdir(path);
+  const created = await fs.realpath(path);
+  if (!DRIVE_PATH.test(created)) throw new Error('created folder is not on a local drive');
+  return { path: created };
+}
+
 export async function listDirectories(path?: string): Promise<DirectoryListing> {
   if (!path?.trim()) return { entries: await roots() };
   const input = path.trim();

@@ -105,6 +105,31 @@ test('mobile drill-down keeps workspace and session context while switching view
   }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{})}
 });
 
+test('folder browser creates a local subfolder and rejects invalid or duplicate names',async({page})=>{
+  const root=await mkdtemp(join(tmpdir(),'pi-console-create-picker-'));
+  try{
+    await page.goto('/');
+    await page.getByLabel('Workspace path').fill(root);
+    await page.getByRole('button',{name:'Browse folders'}).click();
+    const dialog=page.getByRole('dialog',{name:'Browse local folders'});
+    await dialog.getByLabel('New folder name').fill('../escape');
+    await dialog.getByRole('button',{name:'Create folder'}).click();
+    await expect(dialog.getByRole('alert')).toContainText('invalid folder name');
+    await dialog.getByLabel('New folder name').fill('fresh project');
+    await dialog.getByRole('button',{name:'Create folder'}).click();
+    await expect(dialog.getByRole('button',{name:'Use this folder'})).toBeEnabled();
+    await expect(dialog.locator('.picker-footer')).toContainText('fresh project');
+    await dialog.getByRole('button',{name:'Parent folder'}).click();
+    await expect(dialog.getByRole('button',{name:'fresh project'})).toBeVisible();
+    await dialog.getByLabel('New folder name').fill('fresh project');
+    await dialog.getByRole('button',{name:'Create folder'}).click();
+    await expect(dialog.getByRole('alert')).toContainText('EEXIST');
+    await dialog.getByRole('button',{name:'fresh project'}).click();
+    await dialog.getByRole('button',{name:'Use this folder'}).click();
+    await expect(page.getByLabel('Workspace path')).toHaveValue(join(root,'fresh project'));
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{})}
+});
+
 test('folder browser selects a server-local workspace on desktop and mobile without exposing files',async({page})=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-picker-'));
   const project=join(root,'my-project'),nested=join(project,'nested');

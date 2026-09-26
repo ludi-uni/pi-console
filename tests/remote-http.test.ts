@@ -26,6 +26,7 @@ test('remote-mode HTTP fails closed for HTML, API, SSE, invalid Host and forged 
     assert.equal((await request('/api/session-retention',{},'POST')).status,401);
     assert.equal((await request('/api/session/recycle',{},'POST')).status,401);
     assert.equal((await request('/api/directories?path=C%3A%5C')).status,401);
+    assert.equal((await request('/api/directories/create',{},'POST')).status,401);
     assert.equal((await request('/api/pets')).status,401);
     assert.equal((await request('/api/pet/file?pet=fio-observer&file=spritesheet.webp')).status,401);
     assert.equal((await request('/api/session/options?workspaceId=x&sessionId=y')).status,401);

@@ -28,7 +28,7 @@ export async function readBoundOrchestrator(root: string, sessionId: string, wor
   try {
     await fs.access(dbPath);
     db = new DatabaseSync(dbPath, {readOnly:true});
-    const run = db.prepare('SELECT id,status,created_at,updated_at,repo_root FROM runs WHERE id=?').get(doc.runId) as Raw | undefined;
+    const run = db.prepare('SELECT id,request,status,created_at,updated_at,repo_root FROM runs WHERE id=?').get(doc.runId) as Raw | undefined;
     if (!run) return result; // A custom store may hold this exact bound run; keep only the validated public projection.
     if (typeof run.repo_root !== 'string' || pathKey(run.repo_root) !== pathKey(workspacePath)) return;
     result.run = run;
@@ -43,6 +43,7 @@ export class OrchestratorSource {
   private last = new Map<string,string>();
   private timer?: NodeJS.Timeout;
   private polling = false;
+  boundRun?: { id: string; request: string; createdAt: string };
   constructor(private readonly kit: string, private readonly sessionId: string, private readonly workspacePath: string,
     private readonly publish: (node: ExecutionNode) => void,
     private readonly storePath?: string) {}
@@ -53,7 +54,11 @@ export class OrchestratorSource {
     this.polling = true;
     try {
       const data = await readBoundOrchestrator(this.kit,this.sessionId,this.workspacePath,this.storePath);
-      if (data) this.project(data);
+      if (data) {
+        if (typeof data.run?.id === 'string' && typeof data.run.request === 'string' && typeof data.run.created_at === 'string')
+          this.boundRun = { id: data.run.id, request: data.run.request, createdAt: data.run.created_at };
+        this.project(data);
+      }
     } finally { this.polling = false; }
   }
   private upsert(node: ExecutionNode) {

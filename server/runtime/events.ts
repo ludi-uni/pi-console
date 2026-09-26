@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ChatMessage, ExecutionEvent, EventType, SessionInfo, Snapshot, ProcessState, ExecutionNode } from '../../shared/types.ts';
 import { ExecutionState } from './execution-state.ts';
 import { ForegroundSubagentAdapter } from '../adapters/subagents/foreground.ts';
+import { AsyncSubagentAdapter } from '../adapters/subagents/async-widget.ts';
 
 type Raw = Record<string, any>;
 const text = (message: Raw): string => Array.isArray(message.content) ? message.content.filter((v: Raw) => v.type === 'text').map((v: Raw) => String(v.text ?? '')).join('') : typeof message.content === 'string' ? message.content : '';
@@ -31,6 +32,7 @@ export class SessionEvents {
   private listeners = new Set<(e: ExecutionEvent) => void>();
   readonly execution = new ExecutionState();
   private readonly subagents = new ForegroundSubagentAdapter((node,type) => this.publishNode(node,type));
+  private readonly asyncSubagents = new AsyncSubagentAdapter(node => this.publishNode(node));
   constructor(readonly session: SessionInfo, private readonly runtime: () => ProcessState) {}
   publishNode(node: ExecutionNode, type: EventType = 'ExecutionNodeUpdated') {
     this.emit(type,node.id,{node},{source:node.sourceKind === 'pi-subagents'?'pi-subagents':'orchestrator', sourceRef:{kind:node.sourceKind,nativeId:node.nativeId},parentId:node.parentId,status:node.status,certainty:node.correlation==='unknown'?'derived':'observed'});
@@ -82,6 +84,7 @@ export class SessionEvents {
     this.activeRunId = undefined; this.currentMessage = undefined; this.messageBlocks.clear();
   }
   ingest(raw: Raw): void {
+    this.asyncSubagents.ingest(raw);
     if (raw.type === 'console_dialog_cancelled') { this.emit('ErrorEvent', 'extension-ui', { summary: `Unsupported ${raw.method} dialog cancelled` }, { source: 'console' }); return; }
     if (raw.type === 'extension_error') { this.emit('ErrorEvent', 'extension', { summary: summary(raw.error) }); return; }
     if (raw.type === 'response') { if (raw.success === false) this.emit('ErrorEvent', 'rpc', { summary: summary(raw.error) }, { status: 'failed' }); return; }

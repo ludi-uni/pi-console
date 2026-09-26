@@ -40,6 +40,30 @@ test('real-shaped Pi + child foreground + orchestrator fixture correlate only by
   const count=state.events.length;orch.project(data);assert.equal(state.events.length,count,'duplicate snapshot must not emit');
 });
 
+test('session-scoped Pi async widget shows child lifecycle after the foreground run ends',()=>{
+  const state=new SessionEvents(session,()=> 'running');
+  const widget=(phase:string,childState:string)=>({type:'extension_ui_request',method:'setWidget',widgetKey:'subagent-async',widgetLines:[`PI_SUBAGENT_ASYNC_JSON:${JSON.stringify({kind:'pi-subagents.async-status-snapshot',version:1,generatedAt:Date.now(),omitted:{runs:0,children:0,byteLimitExceeded:false},runs:[{id:'run-async',kind:'workflow',label:'Review workflow',state:phase,children:[{id:'coder',kind:'subagent',label:'coder',state:childState,activity:{currentTool:'read',toolCount:2}}]}]})}`]});
+  state.ingest(widget('running','running'));
+  const root=nodes(state).find(n=>n.kind==='orchestrator'&&n.sourceKind==='pi-subagents')!;
+  const child=nodes(state).find(n=>n.kind==='agent'&&n.sourceKind==='pi-subagents')!;
+  assert.equal(child.parentId,root.id);assert.equal(child.action,'read');assert.equal(child.status,'running');
+  const count=state.events.length;state.ingest(widget('running','running'));assert.equal(state.events.length,count);
+  state.ingest(widget('complete','failed'));
+  assert.equal(nodes(state).find(n=>n.id===root.id)?.status,'completed');
+  assert.equal(nodes(state).find(n=>n.id===child.id)?.status,'failed');
+  state.ingest({type:'extension_ui_request',method:'setWidget',widgetKey:'subagent-async'});
+  assert.equal(nodes(state).find(n=>n.id===child.id)?.status,'failed','widget clearing does not invent a different terminal result');
+});
+
+test('async widget disappearing does not falsely report completion',()=>{
+  const state=new SessionEvents(session,()=> 'running');
+  state.ingest({type:'extension_ui_request',method:'setWidget',widgetKey:'subagent-async',widgetLines:[`PI_SUBAGENT_ASYNC_JSON:${JSON.stringify({kind:'pi-subagents.async-status-snapshot',version:1,omitted:{runs:0,byteLimitExceeded:false},runs:[{id:'run-1',kind:'subagent',label:'scout',state:'running'}]})}`]});
+  state.ingest({type:'extension_ui_request',method:'setWidget',widgetKey:'subagent-async'});
+  assert.equal(nodes(state).find(n=>n.sourceKind==='pi-subagents')?.status,'unknown');
+  state.ingest({type:'extension_ui_request',method:'setWidget',widgetKey:'another-widget',widgetLines:['PI_SUBAGENT_ASYNC_JSON:{}']});
+  assert.equal(nodes(state).filter(n=>n.sourceKind==='pi-subagents').length,1);
+});
+
 test('failed child fixture remains a failed observed node, without invented child tool',()=>{
   const state=new SessionEvents(session,()=> 'running'); state.preparePrompt(); state.ingest({type:'agent_start'});
   state.ingest({type:'tool_execution_start',toolName:'subagent',toolCallId:'call-child'});
@@ -65,11 +89,11 @@ test('read-only exact bound snapshot + DB can rehydrate task and failure after r
   const snap=fixture('orchestrator-completed.json');snap.repoRoot=workspace;
   await writeFile(join(clients,'pi-web-session-1.json'),JSON.stringify(snap));
   const db=new DatabaseSync(dbPath);
-  db.exec('CREATE TABLE runs(id TEXT,status TEXT,created_at TEXT,updated_at TEXT,repo_root TEXT);CREATE TABLE tasks(run_id TEXT,id TEXT,status TEXT,updated_at TEXT,payload TEXT);CREATE TABLE decisions(run_id TEXT,id TEXT,task_id TEXT,status TEXT,created_at TEXT,answered_at TEXT,reason TEXT);CREATE TABLE trace(id INTEGER PRIMARY KEY,run_id TEXT,at TEXT,type TEXT,payload TEXT)');
-  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?)').run('run-done','completed','2026-01-01T00:00:00Z','2026-01-01T00:01:00Z',workspace);
+  db.exec('CREATE TABLE runs(id TEXT,request TEXT,status TEXT,created_at TEXT,updated_at TEXT,repo_root TEXT);CREATE TABLE tasks(run_id TEXT,id TEXT,status TEXT,updated_at TEXT,payload TEXT);CREATE TABLE decisions(run_id TEXT,id TEXT,task_id TEXT,status TEXT,created_at TEXT,answered_at TEXT,reason TEXT);CREATE TABLE trace(id INTEGER PRIMARY KEY,run_id TEXT,at TEXT,type TEXT,payload TEXT)');
+  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?)').run('run-done','test request','completed','2026-01-01T00:00:00Z','2026-01-01T00:01:00Z',workspace);
   db.prepare('INSERT INTO tasks VALUES(?,?,?,?,?)').run('run-done','t1','completed','2026-01-01T00:00:30Z',JSON.stringify({title:'Investigate',dependencies:[],attempts:1})); db.close();
   try {
-    const result=await readBoundOrchestrator(root,'session-1',workspace,dbPath);assert.equal(result?.tasks.length,1);
+    const result=await readBoundOrchestrator(root,'session-1',workspace,dbPath);assert.equal(result?.tasks.length,1);assert.equal(result?.run?.request,'test request');
     const rejected=await readBoundOrchestrator(root,'other-session',workspace,dbPath);assert.equal(rejected,undefined);
     const output:ExecutionNode[]=[]; const source=new OrchestratorSource(root,'session-1',workspace,n=>output.push(n),dbPath);
     await source.poll();assert.ok(output.find(n=>n.id==='orch-task:run-done:t1'&&n.status==='completed'));

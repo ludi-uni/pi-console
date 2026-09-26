@@ -4,9 +4,10 @@ import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceStore, readSession, listSessions } from '../server/runtime/workspaces.ts';
-import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts } from '../web/ui-logic.ts';
-import type { ExecutionEvent } from '../shared/types.ts';
+import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts, visibleExecutionRows } from '../web/ui-logic.ts';
+import type { ExecutionEvent, ExecutionNode, ExecutionStateSnapshot } from '../shared/types.ts';
 import { splitCode } from '../web/ChatMessage.tsx';
+import { kitRequestTitle, kitRunProgress } from '../web/KitRunCard.tsx';
 
 test('workspace metadata migrates old array, validates missing path, pin/rename/recent and prompts persist',async()=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-ux-'));try{
@@ -49,6 +50,25 @@ test('Recent issue clears on success, dismissal or expiry; newer failures remain
   assert.equal(recentIssue([event(4,'RunFailed',11)],[],now),undefined);
   assert.equal(recentIssue([event(4,'RunFailed',11),event(5,'ToolFailed',1)],[],now)?.eventId,'event-5');
 });
+test('completed subagent remains visible in Now while unrelated completed tools stay hidden',()=>{
+  const make=(id:string,kind:ExecutionNode['kind'],parentId?:string):ExecutionNode=>({id,kind,parentId,label:id,status:'completed',correlation:'explicit',sourceKind:'pi',updatedAt:'2026-01-01T00:00:00Z'});
+  const run=make('run','run'),tool=make('subagent-tool','tool','run'),agent=make('child','agent','subagent-tool'),other=make('other-tool','tool','run');
+  const state:ExecutionStateSnapshot={nodes:[run,tool,agent,other],roots:['run'],unattached:[],rows:[{node:run,depth:0,unattached:false},{node:tool,depth:1,unattached:false},{node:agent,depth:2,unattached:false},{node:other,depth:1,unattached:false}],activeCount:0,failedCount:0,decisionCount:0};
+  assert.deepEqual(visibleExecutionRows(state,new Set(),new Set()).map(row=>row.node.id),['run','subagent-tool','child']);
+  assert.deepEqual(visibleExecutionRows(state,new Set(),new Set(['run'])),[{node:run,depth:0,unattached:false}]);
+});
+
+test('kit status uses only a verified run ID and never substitutes previous task progress',()=>{
+  const node=(id:string,kind:ExecutionNode['kind'],parentId?:string):ExecutionNode=>({id,kind,parentId,label:id,status:'running',sourceKind:'orchestrator',correlation:'explicit',nativeId:kind==='orchestrator'?id.slice(5):id,updatedAt:'2026-01-01T00:00:00Z'});
+  const previous=node('orch:old','orchestrator'),current=node('orch:new','orchestrator');
+  const nodes=[previous,node('old task','task',previous.id),current,node('new task','task',current.id),node('reviewer','agent','new task')];
+  assert.equal(kitRunProgress({running:true,request:'New task'},nodes).root,undefined);
+  const progress=kitRunProgress({running:true,request:'New task',runId:'new'},nodes);
+  assert.deepEqual(progress.tasks.map(n=>n.label),['new task']);assert.equal(progress.agents[0].label,'reviewer');
+  assert.equal(kitRequestTitle('# Useful title\n'+'x'.repeat(10000)),'Useful title');
+  assert.equal(kitRequestTitle('x'.repeat(10000)).length,120);
+});
+
 test('quick prompts, code fences and connection states are deterministic',()=>{
   assert.equal(validQuickPrompts(['Edit this']),true);assert.equal(validQuickPrompts(Array(9).fill('x')),false);
   assert.deepEqual(splitCode('before\n```ts\nconst x=1;\n```\nafter').map(p=>p.type),['text','code','text']);

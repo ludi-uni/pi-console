@@ -7,6 +7,24 @@ import { WorkspaceStore } from '../server/runtime/workspaces.ts';
 import { RuntimeManager } from '../server/runtime/manager.ts';
 import { SessionEvents } from '../server/runtime/events.ts';
 
+test('activity retains session-scoped background subagent status after parent Pi run settles', async () => {
+  const root=await mkdtemp(join(tmpdir(),'pi-console-background-'));
+  try {
+    const store=new WorkspaceStore(join(root,'workspaces.json'));const workspace=await store.add(root);
+    const file=join(root,'session.jsonl'),session={id:'session-async',workspaceId:workspace.id,filePath:file};
+    await writeFile(file,JSON.stringify({type:'session',id:session.id,cwd:root})+'\n');
+    const state=new SessionEvents(session,()=> 'running');const runtime=new RuntimeManager(store,root);
+    (runtime as any).active.set(session.id,{state,session});
+    const widget=(status:string)=>({type:'extension_ui_request',method:'setWidget',widgetKey:'subagent-async',widgetLines:[`PI_SUBAGENT_ASYNC_JSON:${JSON.stringify({kind:'pi-subagents.async-status-snapshot',version:1,omitted:{runs:0,byteLimitExceeded:false},runs:[{id:'run-async',kind:'subagent',label:'reviewer',state:status,children:[]}]})}`]});
+    state.ingest(widget('running'));
+    assert.equal((await runtime.activity())[0]?.work.find(w=>w.label==='reviewer')?.status,'running');
+    state.ingest(widget('complete'));
+    const complete=(await runtime.activity())[0];
+    assert.equal(complete?.work.find(w=>w.label==='reviewer')?.status,'completed');
+    assert.equal(complete?.completion?.status,'completed');
+  } finally {await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:200});}
+});
+
 test('activity shows live foreground child and finished run with updated session title', async () => {
   const root=await mkdtemp(join(tmpdir(),'pi-console-activity-'));
   try {

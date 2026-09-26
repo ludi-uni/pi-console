@@ -14,7 +14,7 @@ export class RuntimeManager {
   private failed = new Map<string, Active>();
   private starting = new Map<string, Promise<Active>>();
   private retiring = new Set<string>();
-  private kitRuns = new Map<string, { workspaceId: string; running: boolean; request: string; runId?: string; error?: string; finishedAt?: string }>();
+  private kitRuns = new Map<string, { workspaceId: string; running: boolean; request: string; startedAt: string; runId?: string; error?: string; finishedAt?: string }>();
   constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir()) {}
   get sessionRoot(){return this.sessionsRoot}
   async sessions(workspaceId: string) {
@@ -34,7 +34,7 @@ export class RuntimeManager {
       const work=[...liveWork,...recentWork].map(n=>({id:n.id,label:n.label,status:n.status,kind:n.kind,action:n.action}));
       if(kitRunning&&!work.some(n=>n.kind==='orchestrator'))work.unshift({id:`kit:${entry.session.id}`,label:'Orchestrator',status:'running',kind:'orchestrator',action:undefined});
       const running=!!entry.state.activeRunId||!!kitRunning||work.some(n=>n.status==='running')||execution.nodes.some(n=>n.status==='running'&&n.kind==='tool');
-      const completed=execution.nodes.filter(n=>['run','orchestrator'].includes(n.kind)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&n.endedAt)
+      const completed=execution.nodes.filter(n=>(['run','orchestrator'].includes(n.kind)||n.kind==='agent'&&n.sourceKind==='pi-subagents'&&!n.parentId)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&n.endedAt)
         .sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
       const rootCompletion=completed?.endedAt?{id:completed.id+':'+completed.endedAt,status:completed.status as 'completed'|'failed'|'cancelled'|'interrupted',at:completed.endedAt}:undefined;
       const jobCompletion=job?.finishedAt?{id:`kit:${entry.session.id}:${job.finishedAt}`,status:job.error?'failed' as const:'completed' as const,at:job.finishedAt}:undefined;
@@ -140,6 +140,10 @@ export class RuntimeManager {
     this.workspaces.get(workspaceId);
     const kit = await orchestratorKit();
     const job = this.kitRuns.get(sessionId);
+    const entry = this.active.get(sessionId);
+    const bound = entry?.session.workspaceId === workspaceId ? entry.source?.boundRun : undefined;
+    if (job?.workspaceId === workspaceId && job.running && !job.runId && bound && bound.request === job.request &&
+        Number.isFinite(Date.parse(bound.createdAt)) && Date.parse(bound.createdAt) >= Date.parse(job.startedAt)) job.runId = bound.id;
     return { available: !!kit, ...(job?.workspaceId === workspaceId ? { job } : {}) };
   }
   async startOrchestrator(workspaceId: string, sessionId: string, request: unknown) {
@@ -150,7 +154,7 @@ export class RuntimeManager {
     const { state } = await this.open(workspaceId, sessionId);
     if (state.busy || this.kitRuns.get(sessionId)?.running) throw new Error('Pi session or orchestrator is busy');
     const workspace = this.workspaces.get(workspaceId);
-    const job = { workspaceId, running: true, request: request.trim(), runId: undefined as string | undefined, error: undefined as string | undefined, finishedAt: undefined as string | undefined };
+    const job = { workspaceId, running: true, request: request.trim(), startedAt: new Date().toISOString(), runId: undefined as string | undefined, error: undefined as string | undefined, finishedAt: undefined as string | undefined };
     this.kitRuns.set(sessionId, job);
     void startKitRun(kit, sessionId, workspace.path, job.request).then(id => { job.runId = id; job.running = false; job.finishedAt = new Date().toISOString(); }, error => { job.error = (error as Error).message; job.running = false; job.finishedAt = new Date().toISOString(); });
     return { job };
