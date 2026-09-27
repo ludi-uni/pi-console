@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SessionEvents } from '../server/runtime/events.ts';
 import { ExecutionState } from '../server/runtime/execution-state.ts';
-import { OrchestratorSource, readBoundOrchestrator } from '../server/adapters/orchestrator/source.ts';
+import { OrchestratorSource, readBoundOrchestrator, readSessionRunHistory, recordRunBinding } from '../server/adapters/orchestrator/source.ts';
 import type { ExecutionNode } from '../shared/types.ts';
 const fixture = (name:string) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`,import.meta.url),'utf8'));
 const session={id:'session-1',workspaceId:'workspace-1',filePath:'session.jsonl'};
@@ -97,5 +97,32 @@ test('read-only exact bound snapshot + DB can rehydrate task and failure after r
     const rejected=await readBoundOrchestrator(root,'other-session',workspace,dbPath);assert.equal(rejected,undefined);
     const output:ExecutionNode[]=[]; const source=new OrchestratorSource(root,'session-1',workspace,n=>output.push(n),dbPath);
     await source.poll();assert.ok(output.find(n=>n.id==='orch-task:run-done:t1'&&n.status==='completed'));
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('session run history rehydrates only journaled, workspace-validated older runs',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'pi-console-orch-history-'));
+  const workspace=join(root,'workspace');const dbPath=join(root,'state.db');
+  await mkdir(workspace); const clients=join(root,'.orchestration','activity','clients');await mkdir(clients,{recursive:true});
+  const db=new DatabaseSync(dbPath);
+  db.exec('CREATE TABLE runs(id TEXT,request TEXT,status TEXT,created_at TEXT,updated_at TEXT,repo_root TEXT);CREATE TABLE tasks(run_id TEXT,id TEXT,status TEXT,updated_at TEXT,payload TEXT);CREATE TABLE decisions(run_id TEXT,id TEXT,task_id TEXT,status TEXT,created_at TEXT,answered_at TEXT,reason TEXT);CREATE TABLE trace(id INTEGER PRIMARY KEY,run_id TEXT,at TEXT,type TEXT,payload TEXT)');
+  // Older run owned by this session, a bound current run, an unbound run in the same workspace,
+  // and a run in a different workspace.
+  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?)').run('run-old','older request','completed','2026-01-01T00:00:00Z','2026-01-01T00:05:00Z',workspace);
+  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?)').run('run-current','current request','completed','2026-01-02T00:00:00Z','2026-01-02T00:05:00Z',workspace);
+  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?)').run('run-foreign','other request','completed','2026-01-03T00:00:00Z','2026-01-03T00:05:00Z',workspace);
+  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?)').run('run-other-ws','elsewhere','completed','2026-01-04T00:00:00Z','2026-01-04T00:05:00Z',join(root,'other'));
+  db.prepare('INSERT INTO tasks VALUES(?,?,?,?,?)').run('run-old','t1','completed','2026-01-01T00:04:00Z',JSON.stringify({title:'Old task',attempts:1}));
+  db.close();
+  try {
+    // No journal yet: nothing is rehydrated even though runs share the workspace.
+    assert.equal((await readSessionRunHistory(root,'session-1',workspace,dbPath,'run-current')).length,0);
+    await recordRunBinding(root,'session-1','run-old');
+    await recordRunBinding(root,'session-1','run-current');
+    const history=await readSessionRunHistory(root,'session-1',workspace,dbPath,'run-current');
+    assert.deepEqual(history.map(h=>h.run?.id),['run-old']);
+    assert.equal(history[0].tasks.length,1);
+    // A different session does not own the journaled run.
+    assert.equal((await readSessionRunHistory(root,'other-session',workspace,dbPath)).length,0);
   } finally { await rm(root,{recursive:true,force:true}); }
 });

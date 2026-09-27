@@ -43,7 +43,9 @@ test('settings: sections, local preferences, mobile browser Back through session
     await page.getByLabel('Workspace path').fill(cwd);
     await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.getByRole('button',{name:'New Session'})).toBeVisible();
+    const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
+    expect((await created).ok()).toBeTruthy();
     await expect(page.getByLabel('Execution Timeline')).toBeVisible();
     await page.getByRole('button',{name:'Chat',exact:true}).click();
     await page.setViewportSize({width:320,height:700});

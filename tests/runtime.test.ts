@@ -35,6 +35,23 @@ test('real Pi-shaped fixture normalizes stream, tools and settled (not agent_end
   assert.equal(state.activeRunId, undefined);
   assert.ok(events.every((e, i) => e.seq === i+1 && e.sessionId === 'sid'));
 });
+test('thinking and tool command stay separate from answer in live and resumed Pi messages',()=>{
+  const state=new SessionEvents(session,()=> 'running');state.preparePrompt('Explain');state.ingest({type:'agent_start'});
+  state.ingest({type:'message_start',message:{role:'assistant',content:[]}});
+  state.ingest({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'Reasoning'}});
+  assert.equal(state.chat.at(-1)?.thinking,'Reasoning');assert.equal(state.chat.at(-1)?.text,'');
+  state.ingest({type:'tool_execution_start',toolCallId:'tool-1',toolName:'powershell',args:{command:'Write-Output OK\nWrite-Output DONE'}});
+  assert.equal(state.chat.at(-1)?.tools?.[0].command,'Write-Output OK\nWrite-Output DONE');
+  const complete={role:'assistant',content:[{type:'thinking',thinking:'Final reasoning'},{type:'toolCall',id:'tool-1',name:'powershell',arguments:{command:'Write-Output OK\nWrite-Output DONE'}},{type:'text',text:'Done'}],stopReason:'stop'};
+  state.ingest({type:'message_end',message:complete});state.ingest({type:'agent_settled'});
+  assert.equal(state.chat.at(-1)?.text,'Done');assert.equal(state.chat.at(-1)?.thinking,'Final reasoning');
+  assert.equal(state.chat.at(-1)?.tools?.[0].command,'Write-Output OK\nWrite-Output DONE');
+  const restored=new SessionEvents(session,()=> 'running');restored.load([complete]);
+  assert.deepEqual(restored.chat[0].thinking,state.chat.at(-1)?.thinking);
+  assert.deepEqual(restored.chat[0].tools,state.chat.at(-1)?.tools);
+  assert.equal(state.events.find(e=>e.type==='MessageDelta')?.payload.channel,'thinking');
+});
+
 test('detached child completion wakes the parent without an HTTP prompt and projects its continuation', () => {
   const state = new SessionEvents(session, () => 'running');
   state.ingest({type:'agent_start'});

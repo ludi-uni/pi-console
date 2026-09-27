@@ -14,7 +14,8 @@ export interface ExecutionEvent {
 }
 export type PromptAttachment = { kind: 'text'; name: string; mimeType: string; text: string } | { kind: 'image'; name: string; mimeType: string; data: string };
 export interface SessionOptions { models: { provider: string; id: string; name: string }[]; model?: { provider: string; id: string }; thinkingLevel: string; thinkingLevels: string[]; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } }
-export interface ChatMessage { id: string; role: 'user' | 'assistant'; text: string; complete: boolean }
+export interface ChatTool { id: string; name: string; command?: string; truncated?: boolean }
+export interface ChatMessage { id: string; role: 'user' | 'assistant'; text: string; thinking?: string; tools?: ChatTool[]; complete: boolean }
 export interface Workspace { id: string; name: string; path: string; pinned: boolean; lastOpenedAt: string; valid?: boolean }
 export interface SessionInfo { id: string; workspaceId: string; filePath: string; name?: string; updatedAt?: string; running?: boolean; decisionCount?: number }
 export interface ActiveSessionSummary { sessionId: string; workspaceId: string; sessionName: string; workspaceName: string; running: boolean; decisionCount: number; updatedAt: string; work: { id: string; label: string; status: ExecutionStatus; kind: ExecutionNodeKind; action?: string }[]; completion?: { id: string; status: 'completed' | 'failed' | 'cancelled' | 'interrupted'; at: string } }

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { JsonlParser } from './parser.ts';
 import type { ProcessState } from '../../../shared/types.ts';
@@ -26,6 +27,15 @@ export function piExecutable(): string {
   return file;
 }
 
+// Ships a tiny extension into every spawned worker. It enforces (inside Pi, not by prompt) the
+// tool-free report reply the console requests around saveKitReportToPi; without it Pi could run
+// arbitrary tools while replaying an orchestrator report into the session.
+export function consoleExtension(): string {
+  const file = fileURLToPath(new URL('../../../extensions/pi-console-session.mjs', import.meta.url));
+  if (!existsSync(file)) throw new Error('Pi Console report safety extension is missing');
+  return file;
+}
+
 export class PiProcess {
   state: ProcessState = 'stopped';
   private child?: ChildProcessWithoutNullStreams;
@@ -44,7 +54,7 @@ export class PiProcess {
     this.set('starting');
     const parser = new JsonlParser();
     try {
-      const args = [piExecutable(), '--mode', 'rpc', ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
+      const args = [piExecutable(), '--mode', 'rpc', '--extension', consoleExtension(), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
       const child = spawn(process.execPath, args, { cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
       child.stderr.on('data', (data: Buffer) => { this.stderr = (this.stderr + data.toString('utf8')).slice(-4096); });

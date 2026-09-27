@@ -12,7 +12,7 @@ export async function orchestratorKit(): Promise<string | undefined> {
 
 // Use the kit's public programmatic API, not a synthetic Pi prompt that merely asks the model to call a tool.
 // The kit owns its run store and model invocations; this console only supplies a verified session binding.
-export async function startKitRun(root: string, sessionId: string, workspacePath: string, request: string): Promise<string> {
+export async function startKitRun(root: string, sessionId: string, workspacePath: string, request: string, onProgress?: (message: string) => void, onReport?: (report: string) => void): Promise<string> {
   const load = (file: string) => import(pathToFileURL(join(root, file)).href);
   const [api, pi, subagent] = await Promise.all([
     load('lib/orchestrator/api.mjs'), load('adapters/pi/lib/invoke.mjs'), load('adapters/pi/lib/subagent.mjs'),
@@ -27,7 +27,11 @@ export async function startKitRun(root: string, sessionId: string, workspacePath
     const health = api.createRunHealth(ctx);
     const invoke = pi.createPiInvoker();
     const runner = api.createRunRunner(ctx, { invoke, runSubagent: subagent.createPiSubagentRunner(), repoRoot: workspacePath, apply: false, health });
-    const result = await api.startOrchestration(ctx, { request, repoRoot: workspacePath, runner, invoke, health });
+    const result = await api.startOrchestration(ctx, { request, repoRoot: workspacePath, runner, invoke, health, onProgress });
+    if (onReport && typeof api.formatReport === 'function') {
+      try { const report = api.formatReport(result); if (typeof report === 'string') onReport(report); }
+      catch { /* Display formatting must not turn a completed run into a failure. */ }
+    }
     return String(result.runId ?? '');
   } finally { ctx.session.close(); }
 }

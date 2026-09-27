@@ -16,6 +16,44 @@ export async function kitRoot(): Promise<string | undefined> {
   try { await fs.access(join(npmRoot,'adapters','pi','orchestrator-ext','index.js')); return await fs.realpath(npmRoot); } catch { return; }
 }
 export type OrchestratorRead = { snapshot: Raw; run?: Raw; tasks: Raw[]; decisions: Raw[]; trace: Raw[] };
+
+// The kit store does not record which Pi session started a run — the only session linkage is the
+// client snapshot file, which names just the latest bound runId. To rehydrate older runs for the
+// same session across restarts we keep a console-owned binding journal next to the kit's client
+// snapshots: every run this console binds for a session is appended once. Workspace ownership of
+// each journaled run is still proven by run.repo_root === workspacePath in the store.
+const bindingsFile = (root: string, sessionId: string) => join(root,'.orchestration','activity','clients',`pi-web-${sessionId}.runs.json`);
+export async function recordRunBinding(root: string, sessionId: string, runId: string): Promise<void> {
+  if (typeof runId !== 'string' || !runId) return;
+  const file = bindingsFile(root, sessionId);
+  const existing = await readRunBindings(root, sessionId);
+  if (existing.includes(runId)) return;
+  try { await fs.writeFile(file, JSON.stringify([...existing, runId].slice(-50))); } catch { /* A missing journal only loses older-run history, never the current binding. */ }
+}
+export async function readRunBindings(root: string, sessionId: string): Promise<string[]> {
+  try {
+    const list = JSON.parse(await fs.readFile(bindingsFile(root, sessionId),'utf8'));
+    return Array.isArray(list) ? list.filter((v): v is string => typeof v === 'string' && !!v).slice(-50) : [];
+  } catch { return []; }
+}
+function readRun(db: DatabaseSync, runId: string): Raw | undefined { return db.prepare('SELECT id,request,status,created_at,updated_at,repo_root FROM runs WHERE id=?').get(runId) as Raw | undefined; }
+// Ownership is proven only by the console's own binding journal (written when this session bound
+// the run) plus the run row still existing in the kit store. The kit store has no per-session
+// origin column, so repo_root/workspace equality is a necessary but not sufficient check on its own.
+function runOwnedBySession(run: Raw, bindings: Set<string>): boolean {
+  return typeof run?.id === 'string' && bindings.has(run.id);
+}
+function readRunRows(db: DatabaseSync, runId: string): Pick<OrchestratorRead,'tasks'|'decisions'|'trace'> {
+  return {
+    tasks: db.prepare('SELECT id,status,updated_at,payload FROM tasks WHERE run_id=? ORDER BY rowid').all(runId) as Raw[],
+    decisions: db.prepare('SELECT id,task_id,status,created_at,answered_at,reason FROM decisions WHERE run_id=?').all(runId) as Raw[],
+    trace: db.prepare('SELECT id,at,type,payload FROM trace WHERE run_id=? ORDER BY id DESC LIMIT 500').all(runId).reverse() as Raw[],
+  };
+}
+// Synthesize a minimal snapshot for an older bound run so project() can render it uniformly.
+function historicalRead(run: Raw, rows: Pick<OrchestratorRead,'tasks'|'decisions'|'trace'>): OrchestratorRead {
+  return { snapshot: { version: 1, runId: run.id, repoRoot: run.repo_root, startedAt: run.created_at, activity: { runId: run.id, state: run.status, tasks: [], activeInvocations: [], updatedAt: run.updated_at } }, run, ...rows };
+}
 export async function readBoundOrchestrator(root: string, sessionId: string, workspacePath: string, storePath?: string): Promise<OrchestratorRead | undefined> {
   const file = join(root,'.orchestration','activity','clients',`pi-web-${sessionId}.json`);
   let doc: Raw;
@@ -28,16 +66,38 @@ export async function readBoundOrchestrator(root: string, sessionId: string, wor
   try {
     await fs.access(dbPath);
     db = new DatabaseSync(dbPath, {readOnly:true});
-    const run = db.prepare('SELECT id,request,status,created_at,updated_at,repo_root FROM runs WHERE id=?').get(doc.runId) as Raw | undefined;
+    const run = readRun(db, doc.runId);
     if (!run) return result; // A custom store may hold this exact bound run; keep only the validated public projection.
     if (typeof run.repo_root !== 'string' || pathKey(run.repo_root) !== pathKey(workspacePath)) return;
     result.run = run;
-    result.tasks = db.prepare('SELECT id,status,updated_at,payload FROM tasks WHERE run_id=? ORDER BY rowid').all(doc.runId) as Raw[];
-    result.decisions = db.prepare('SELECT id,task_id,status,created_at,answered_at,reason FROM decisions WHERE run_id=?').all(doc.runId) as Raw[];
-    result.trace = db.prepare('SELECT id,at,type,payload FROM trace WHERE run_id=? ORDER BY id DESC LIMIT 500').all(doc.runId).reverse() as Raw[];
+    Object.assign(result, readRunRows(db, doc.runId));
   } catch { /* A validated public snapshot remains usable without the optional DB. */ }
   finally { db?.close(); }
   return result;
+}
+
+// Rehydrate kit runs this same Pi session started before the latest bound snapshot — e.g. after a
+// server restart or when a second run overwrote the client file. The bound run is projected by
+// readBoundOrchestrator; this only adds older, still-validated runs.
+export async function readSessionRunHistory(root: string, sessionId: string, workspacePath: string, storePath?: string, boundRunId?: string): Promise<OrchestratorRead[]> {
+  const dbPath = storePath ?? join(root,'.orchestration','state.db');
+  const out: OrchestratorRead[] = [];
+  const bindings = new Set(await readRunBindings(root, sessionId));
+  if (!bindings.size) return out;
+  let db: DatabaseSync | undefined;
+  try {
+    await fs.access(dbPath);
+    db = new DatabaseSync(dbPath, {readOnly:true});
+    const rows = db.prepare('SELECT id,request,status,created_at,updated_at,repo_root FROM runs WHERE repo_root IS NOT NULL ORDER BY updated_at DESC LIMIT 50').all() as Raw[];
+    for (const run of rows) {
+      if (run.id === boundRunId || typeof run.repo_root !== 'string' || pathKey(run.repo_root) !== pathKey(workspacePath)) continue;
+      if (!runOwnedBySession(run, bindings)) continue;
+      out.push(historicalRead(run, readRunRows(db, run.id)));
+      if (out.length >= 10) break;
+    }
+  } catch { /* Older runs are optional history; the bound snapshot already covers the current run. */ }
+  finally { db?.close(); }
+  return out;
 }
 export class OrchestratorSource {
   private last = new Map<string,string>();
@@ -57,8 +117,17 @@ export class OrchestratorSource {
       if (data) {
         if (typeof data.run?.id === 'string' && typeof data.run.request === 'string' && typeof data.run.created_at === 'string')
           this.boundRun = { id: data.run.id, request: data.run.request, createdAt: data.run.created_at };
+        // Persist this session's bound runId so older runs can be rehydrated after the bound
+        // snapshot is replaced by a newer run or after a console restart. The snapshot's runId
+        // is already validated by readBoundOrchestrator even when the DB row is absent.
+        await recordRunBinding(this.kit, this.sessionId, data.snapshot.runId);
         this.project(data);
       }
+      // Rehydrate this session's earlier validated runs so they are not lost from Execution
+      // when the client snapshot only names the latest bound run.
+      const boundId = this.boundRun?.id ?? data?.run?.id;
+      for (const historical of await readSessionRunHistory(this.kit, this.sessionId, this.workspacePath, this.storePath, typeof boundId === 'string' ? boundId : undefined))
+        this.project(historical);
     } finally { this.polling = false; }
   }
   private upsert(node: ExecutionNode) {

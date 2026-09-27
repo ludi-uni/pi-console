@@ -14,18 +14,18 @@ test('observed active sessions appear across workspaces and open exact session',
     const w2=(await (await page.request.post('/api/workspaces',{data:{path:b}})).json()).workspace;
     const s1=(await (await page.request.post('/api/sessions',{data:{workspaceId:w1.id}})).json()).session;
     const s2=(await (await page.request.post('/api/sessions',{data:{workspaceId:w2.id}})).json()).session;
-    reported=[{sessionId:s1.id,workspaceId:w1.id,workspaceName:w1.name,sessionName:'Review needed',running:false,decisionCount:1,updatedAt:new Date().toISOString()},
-      {sessionId:s2.id,workspaceId:w2.id,workspaceName:w2.name,sessionName:'Working task',running:true,decisionCount:0,updatedAt:new Date().toISOString()}];
+    reported=[{sessionId:s1.id,workspaceId:w1.id,workspaceName:w1.name,sessionName:'Review needed',running:false,decisionCount:1,work:[],updatedAt:new Date().toISOString()},
+      {sessionId:s2.id,workspaceId:w2.id,workspaceName:w2.name,sessionName:'Working task',running:true,decisionCount:0,work:[],updatedAt:new Date().toISOString()}];
     await page.reload();
-    const inbox=page.getByRole('region',{name:'Active sessions'});
+    const inbox=page.getByRole('region',{name:'Activity notifications'});
     await expect(inbox).toContainText('Review needed');await expect(inbox).toContainText('1 need input');await expect(inbox).toContainText('Working task');
     await expect(page.getByRole('button',{name:'Active session alerts'})).toBeVisible();
     await page.screenshot({path:join(tmpdir(),'pi-console-active-sessions-mobile.png'),fullPage:true});
     await inbox.getByRole('button',{name:/Review needed/}).click();
     await expect(page.locator('.app-shell')).toHaveClass(/view-chat/);
     await expect(page.getByLabel('Chat output')).toBeVisible();
-    await page.getByRole('button',{name:'← Sessions'}).click();
-    await expect(page.getByLabel('Search sessions')).toBeVisible();
+    await page.getByRole('button',{name:'← Workspaces'}).click();
+    await expect(page.getByLabel('Find workspace')).toBeVisible();
     for(const [w,s] of [[w1,s1],[w2,s2]])await page.request.post('/api/close',{data:{workspaceId:w.id,sessionId:s.id}});
   }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{})}
 });

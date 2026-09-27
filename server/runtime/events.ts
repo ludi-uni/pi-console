@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ChatMessage, ExecutionEvent, EventType, SessionInfo, Snapshot, ProcessState, ExecutionNode } from '../../shared/types.ts';
+import type { ChatMessage, ChatTool, ExecutionEvent, EventType, SessionInfo, Snapshot, ProcessState, ExecutionNode } from '../../shared/types.ts';
 import { ExecutionState } from './execution-state.ts';
 import { ForegroundSubagentAdapter } from '../adapters/subagents/foreground.ts';
 import { AsyncSubagentAdapter } from '../adapters/subagents/async-widget.ts';
@@ -7,6 +7,18 @@ import { AsyncSubagentAdapter } from '../adapters/subagents/async-widget.ts';
 type Raw = Record<string, any>;
 const text = (message: Raw): string => Array.isArray(message.content) ? message.content.filter((v: Raw) => v.type === 'text').map((v: Raw) => String(v.text ?? '')).join('') : typeof message.content === 'string' ? message.content : '';
 const summary = (value: unknown): string => typeof value === 'string' ? value.slice(0, 400) : '';
+function toolInfo(value: Raw): ChatTool {
+  const args = value.arguments ?? value.args;
+  const key = args && typeof args === 'object' && !Array.isArray(args) ? ['command','program','script','code','path','file'].find(k => typeof args[k] === 'string') : undefined;
+  const command = key ? String(args[key]) : undefined;
+  return { id: String(value.id ?? ''), name: String(value.name ?? value.toolName ?? 'tool').slice(0,100), ...(command !== undefined ? {command:command.slice(0,4000),truncated:command.length>4000} : {}) };
+}
+export function assistantContent(message: Raw): Pick<ChatMessage,'text'|'thinking'|'tools'> {
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  const thinking = blocks.filter((block:Raw)=>block.type==='thinking'&&typeof block.thinking==='string').map((block:Raw)=>block.thinking).join('\n').slice(0,16000);
+  const tools = blocks.filter((block:Raw)=>block.type==='toolCall').slice(0,64).map(toolInfo);
+  return { text:text(message), ...(thinking?{thinking}:{}), ...(tools.length?{tools}:{}) };
+}
 export function previewToolInput(args: unknown): string {
   if(!args||typeof args!=='object'||Array.isArray(args))return '';
   const fields=args as Record<string,unknown>;
@@ -26,7 +38,10 @@ export class SessionEvents {
   private pendingRunId?: string;
   get busy() { return !!this.activeRunId || !!this.pendingRunId; }
   private currentMessage?: ChatMessage;
+  private awaitingPromptEcho = false;
+  private queuedPrompts: { id: string; message: string; parentId?: string }[] = [];
   private messageBlocks = new Map<number, string>();
+  private thinkingBlocks = new Map<number, string>();
   private failure?: string;
   private stopped = false;
   private listeners = new Set<(e: ExecutionEvent) => void>();
@@ -42,8 +57,8 @@ export class SessionEvents {
   load(messages: Raw[]) {
     this.chat.length = 0;
     for (const message of messages) if (message.role === 'user' || message.role === 'assistant') {
-      const content = text(message);
-      if (content) this.chat.push({ id: randomUUID(), role: message.role, text: content, complete: true });
+      const content = message.role === 'assistant' ? assistantContent(message) : { text: text(message) };
+      if (content.text || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.chat.push({ id: randomUUID(), role: message.role, ...content, complete: true });
     }
   }
   private emit(type: EventType, entityId: string, payload: Record<string, unknown> = {}, options: Partial<ExecutionEvent> = {}) {
@@ -57,10 +72,20 @@ export class SessionEvents {
   preparePrompt(message?: string): string {
     if (this.activeRunId || this.pendingRunId) throw new Error('session already has an active run');
     this.pendingRunId = randomUUID(); this.failure = undefined; this.stopped = false;
-    if (message) this.chat.push({ id: randomUUID(), role: 'user', text: message, complete: true });
+    if (message) { this.chat.push({ id: randomUUID(), role: 'user', text: message, complete: true }); this.awaitingPromptEcho = true; }
     return this.pendingRunId;
   }
   accepted(): void { if (this.pendingRunId) this.begin(); }
+  // A steer/follow-up accepted by Pi is queued inside Pi, not yet part of the delivered
+  // conversation. Do NOT push it into `chat` — that would show a complete sent user bubble
+  // before Pi delivers the message. Instead surface it only as a queued execution node so
+  // the user can see it is pending; Pi will emit the real user message when it is delivered.
+  queuePrompt(message: string): void {
+    const id = `pi-queued:${this.activeRunId ?? 'pending'}:${randomUUID()}`;
+    const parentId = this.activeRunId;
+    this.queuedPrompts.push({ id, message, parentId });
+    this.emit('ExecutionNodeUpdated', id, { node: { id, kind: 'task', label: `Queued: ${message.slice(0, 80)}`, status: 'queued', correlation: 'derived-safe', sourceKind: 'pi', parentId, updatedAt: new Date().toISOString() } }, { status: 'queued', parentId });
+  }
   rejected(reason: string): void {
     if (!this.pendingRunId) return;
     this.emit('ErrorEvent', this.pendingRunId, { summary: reason }, { source: 'console', status: 'failed' });
@@ -81,7 +106,7 @@ export class SessionEvents {
     if (!this.activeRunId) return;
     const id = this.activeRunId;
     this.emit(status === 'completed' ? 'RunCompleted' : 'RunFailed', id, { summary: reason ?? status }, { status, certainty: 'derived', source: 'console' });
-    this.activeRunId = undefined; this.currentMessage = undefined; this.messageBlocks.clear();
+    this.activeRunId = undefined; this.currentMessage = undefined; this.messageBlocks.clear(); this.thinkingBlocks.clear();
   }
   ingest(raw: Raw): void {
     this.asyncSubagents.ingest(raw);
@@ -102,9 +127,27 @@ export class SessionEvents {
       return;
     }
     if (!this.activeRunId) return;
+    // A queued steer/follow-up is delivered by Pi as a user message when it actually runs.
+    // Render it on delivery (message_end) rather than when the console queued it, so Chat does
+    // not show it prematurely.
+    if (raw.type === 'message_end' && raw.message?.role === 'user') {
+      const body = text(raw.message);
+      // The user message that opened this run was already added by preparePrompt; only a
+      // queued steer/follow-up delivered mid-run needs to appear now (it was withheld at queue time).
+      if (body && !this.awaitingPromptEcho) {
+        const index = this.queuedPrompts.findIndex(item => item.message === body);
+        if (index >= 0) {
+          const queued = this.queuedPrompts.splice(index, 1)[0];
+          this.emit('ExecutionNodeUpdated', queued.id, { node: { id: queued.id, kind: 'task', label: `Queued: ${body.slice(0, 80)}`, status: 'completed', correlation: 'derived-safe', sourceKind: 'pi', parentId: queued.parentId, updatedAt: new Date().toISOString() } }, { status: 'completed', parentId: queued.parentId });
+        }
+        this.chat.push({ id: randomUUID(), role: 'user', text: body, complete: true });
+        this.emit('MessageCompleted', `pi-user:${this.activeRunId}:${randomUUID()}`, { text: body, role: 'user' }, { parentId: this.activeRunId, status: 'completed' });
+      }
+      this.awaitingPromptEcho = false;
+    }
     if (raw.type === 'message_start' && raw.message?.role === 'assistant') {
       this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false };
-      this.messageBlocks.clear(); this.chat.push(this.currentMessage);
+      this.messageBlocks.clear(); this.thinkingBlocks.clear(); this.chat.push(this.currentMessage);
       this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }, { parentId: this.activeRunId });
     }
     if (raw.type === 'message_update' && this.currentMessage) {
@@ -115,6 +158,16 @@ export class SessionEvents {
         this.currentMessage.text = [...this.messageBlocks.entries()].sort((a,b) => a[0]-b[0]).map(([,v]) => v).join('');
         this.emit('MessageDelta', this.currentMessage.id, { delta: ev.delta, contentIndex: index }, { parentId: this.activeRunId });
       }
+      if (ev?.type === 'thinking_delta' && typeof ev.delta === 'string') {
+        const index = Number(ev.contentIndex ?? 0);
+        this.thinkingBlocks.set(index, (this.thinkingBlocks.get(index) ?? '') + ev.delta);
+        this.currentMessage.thinking = [...this.thinkingBlocks.entries()].sort((a,b)=>a[0]-b[0]).map(([,v])=>v).join('\n').slice(0,16000);
+        this.emit('MessageDelta', this.currentMessage.id, { delta: ev.delta, channel: 'thinking' }, { parentId: this.activeRunId });
+      }
+      if (ev?.type === 'thinking_end' && typeof ev.content === 'string') {
+        this.thinkingBlocks.set(Number(ev.contentIndex ?? 0), ev.content);
+        this.currentMessage.thinking = [...this.thinkingBlocks.entries()].sort((a,b)=>a[0]-b[0]).map(([,v])=>v).join('\n').slice(0,16000);
+      }
       if (ev?.type === 'text_end' && typeof ev.content === 'string') {
         this.messageBlocks.set(Number(ev.contentIndex ?? 0), ev.content);
         this.currentMessage.text = [...this.messageBlocks.entries()].sort((a,b) => a[0]-b[0]).map(([,v]) => v).join('');
@@ -122,14 +175,18 @@ export class SessionEvents {
     }
     if (raw.type === 'message_end' && raw.message?.role === 'assistant') {
       if (!this.currentMessage) { this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false }; this.chat.push(this.currentMessage); this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }); }
-      this.currentMessage.text = text(raw.message); this.currentMessage.complete = true;
-      this.emit('MessageCompleted', this.currentMessage.id, { text: this.currentMessage.text, stopReason: raw.message.stopReason }, { parentId: this.activeRunId, status: raw.message.stopReason === 'error' ? 'failed' : 'completed' });
+      Object.assign(this.currentMessage, assistantContent(raw.message)); this.currentMessage.complete = true;
+      this.emit('MessageCompleted', this.currentMessage.id, { text: this.currentMessage.text, thinking: this.currentMessage.thinking, tools: this.currentMessage.tools, stopReason: raw.message.stopReason }, { parentId: this.activeRunId, status: raw.message.stopReason === 'error' ? 'failed' : 'completed' });
       if (raw.message.stopReason === 'error' || raw.message.stopReason === 'aborted') this.failure = raw.message.errorMessage ?? raw.message.stopReason;
       this.currentMessage = undefined;
     }
     if (raw.type === 'tool_execution_start' || raw.type === 'tool_execution_update' || raw.type === 'tool_execution_end') {
       const id = String(raw.toolCallId ?? 'unknown'); const entityId = `pi-tool:${this.activeRunId}:${id}`;
       const common = { toolCallId: id, toolName: String(raw.toolName ?? 'unknown') };
+      if (raw.type === 'tool_execution_start' && this.currentMessage) {
+        const tools = this.currentMessage.tools ?? [];
+        if (!tools.some(tool => tool.id === id)) this.currentMessage.tools = [...tools,toolInfo({id,name:raw.toolName,args:raw.args})];
+      }
       if (raw.type === 'tool_execution_start') this.emit('ToolStarted', entityId, { ...common, summary: 'Tool started', commandPreview: previewToolInput(raw.args), argumentKeys: Object.keys(raw.args ?? {}) }, { parentId: this.activeRunId, toolCallId: id, status: 'running' });
       if (raw.type === 'tool_execution_update') this.emit('ToolProgress', entityId, { ...common, summary: 'Tool output updated', contentBlocks: raw.partialResult?.content?.length ?? 0 }, { parentId: this.activeRunId, toolCallId: id, status: 'running' });
       if (raw.type === 'tool_execution_end') this.emit(raw.isError ? 'ToolFailed' : 'ToolCompleted', entityId, { ...common, summary: raw.isError ? 'Tool failed' : 'Tool completed', contentBlocks: raw.result?.content?.length ?? 0 }, { parentId: this.activeRunId, toolCallId: id, status: raw.isError ? 'failed' : 'completed' });

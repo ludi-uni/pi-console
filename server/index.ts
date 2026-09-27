@@ -71,7 +71,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/orchestrator') return respond(res, 200, await runtime.kitStatus(wid, sid));
     if (req.method === 'POST' && url.pathname === '/api/subagents/inspect') { const b = await body(req); return respond(res, 200, await runtime.inspectSubagent(b.workspaceId, b.sessionId, b.nodeId)); }
     if (req.method === 'POST' && url.pathname === '/api/orchestrator/start') { const b = await body(req); return respond(res, 202, await runtime.startOrchestrator(b.workspaceId, b.sessionId, b.request)); }
-    if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await body(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? []) }); }
+    if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await body(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? [], b.mode) }); }
     if (req.method === 'POST' && url.pathname === '/api/stop') { const b = await body(req); await runtime.stop(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
     if (req.method === 'POST' && url.pathname === '/api/close') { const b = await body(req); await runtime.closeSession(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
     if (req.method === 'GET' && url.pathname === '/api/state') return respond(res, 200, await runtime.snapshot(wid, sid));

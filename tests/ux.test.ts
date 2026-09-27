@@ -6,8 +6,11 @@ import { join } from 'node:path';
 import { WorkspaceStore, readSession, listSessions } from '../server/runtime/workspaces.ts';
 import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts, visibleExecutionRows } from '../web/ui-logic.ts';
 import type { ExecutionEvent, ExecutionNode, ExecutionStateSnapshot } from '../shared/types.ts';
-import { splitCode } from '../web/ChatMessage.tsx';
-import { kitRequestTitle, kitRunProgress } from '../web/KitRunCard.tsx';
+import ChatItem, { splitCode } from '../web/ChatMessage.tsx';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import KitRunCard, { kitRequestTitle, kitRunProgress } from '../web/KitRunCard.tsx';
+import KitChatReport from '../web/KitChatReport.tsx';
 
 test('workspace metadata migrates old array, validates missing path, pin/rename/recent and prompts persist',async()=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-ux-'));try{
@@ -67,6 +70,28 @@ test('kit status uses only a verified run ID and never substitutes previous task
   assert.deepEqual(progress.tasks.map(n=>n.label),['new task']);assert.equal(progress.agents[0].label,'reviewer');
   assert.equal(kitRequestTitle('# Useful title\n'+'x'.repeat(10000)),'Useful title');
   assert.equal(kitRequestTitle('x'.repeat(10000)).length,120);
+});
+
+test('kit card renders live progress independently of task snapshot and escapes model text',()=>{
+  const markup=renderToStaticMarkup(createElement(KitRunCard,{job:{running:true,request:'Test',progress:['計画中','報告 <script>']},nodes:[]}));
+  assert.match(markup,/報告 &lt;script&gt;/);
+  assert.match(markup,/計画中/);
+  assert.match(markup,/Waiting for the first task update/);
+});
+
+test('assistant thought and command are separate, collapsed, and escaped',()=>{
+  const markup=renderToStaticMarkup(createElement(ChatItem,{message:{id:'a',role:'assistant',text:'Answer',thinking:'<private>',tools:[{id:'x',name:'powershell',command:'Write-Output <safe>'}],complete:true}}));
+  assert.match(markup,/<summary>Thinking/);assert.match(markup,/<summary>Command · powershell/);
+  assert.match(markup,/&lt;private&gt;/);assert.match(markup,/Write-Output &lt;safe&gt;/);
+  assert.match(markup,/>Answer<\/p>/);
+});
+
+test('kit progress and final report render as separate, escaped chat content',()=>{
+  const markup=renderToStaticMarkup(createElement(KitChatReport,{job:{running:false,request:'test',progress:['計画: <script>','報告受信'],report:'完了: <img>'}}));
+  assert.match(markup,/計画: &lt;script&gt;/);
+  assert.match(markup,/報告受信/);
+  assert.match(markup,/完了: &lt;img&gt;/);
+  assert.match(markup,/最終結果は Pi の応答として保存します/);
 });
 
 test('quick prompts, code fences and connection states are deterministic',()=>{
