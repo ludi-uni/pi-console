@@ -1,48 +1,33 @@
-# pi-console
+# Pi Console
 
-Local-first web console for Pi on Windows (Node.js 24+, Pi 0.87.1+). Open a server-local workspace, chat in a separate Pi RPC session, and inspect its execution timeline in a desktop or mobile PWA. This is **not** pi-web and does not depend on its runtime. Pi tools, observed foreground pi-subagents and session-bound Orchestrator activity appear when available; missing relationships remain Unattached. There is no approval action UI.
+[English](README.en.md)
 
-## Install as a Pi package (Windows)
+Pi の会話と実行状況を、Windows の PC やスマートフォンのブラウザーで確認・操作するためのローカル優先の Web コンソールです。Node.js 24 以降、Pi 0.87.1 以降が必要です。Pi の TUI と**同じ会話画面ではなく**、別の Pi RPC セッションを使用します。
 
-Requires Node.js 24+ and Pi 0.87.1+. From this checkout:
+> **安全上の注意**：標準モードは認証なしで `127.0.0.1` にだけ接続します。LAN やインターネットへ直接公開しないでください。遠隔利用には [Cloudflare Tunnel + Access の設定](docs/cloudflare-access.md)が必要です。
+>
+> **旧版から更新する場合**：以前の Windows スタートアップ版は、npm の更新時に消える場所へワークスペース登録を保存していました。**更新する前に**[バックアップと移行手順](docs/upgrade-storage.ja.md)を実行してください。更新後には旧データを回収できない場合があります。
 
-```powershell
-npm install
-npm run build                    # local Pi packages load files in place
-pi install (Resolve-Path .).Path # registers this directory in Pi's user settings
-pi list                          # confirms the package
-```
+## すぐに使う
 
-Restart Pi or run `/reload`, then enter `/pi-console` in Pi. This starts a **loopback-only** Web server; open the displayed URL, select a workspace, and create/select a session. `/pi-console 31719` chooses another port when 31717 is already occupied; `/pi-console stop` stops this Pi-owned server. The Web session is a **separate Pi RPC worker**, not a mirror of the TUI conversation. Merely installing the package does not connect or start a server; the Web status says `Server ready · no Pi session` until a session is selected. On a normal host Pi shutdown, the extension stops its server; an abruptly killed Pi process may leave the child running. Package metadata defaults to `~/.pi/agent/pi-console/`; override with `PI_CONSOLE_DATA_DIR` before starting Pi. Package startup does not read an arbitrary workspace's `.env`; pass remote-mode configuration in the host Pi environment if needed. A local Pi package requires the checkout and built `dist/` to remain available. `dist/` is intentionally not committed, so installing directly from the git URL is not supported. For the published release, use `pi install npm:@ludi-uni/pi-console@latest` and then `/pi-console` in Pi; the npm tarball includes built browser assets and runtime dependencies are installed by Pi.
-
-## Run standalone (Windows)
-
-Requires an installed `@earendil-works/pi-coding-agent` CLI and a configured Pi model. On this machine Pi is installed globally. If discovery fails, set `PI_CONSOLE_PI_COMMAND` to the absolute path of Pi's `dist/bundle/cli.js` (not `pi.cmd`).
+公開済みパッケージを Pi にインストールする場合：
 
 ```powershell
-npm install
-npm run build
-npm start  # loads optional repo-root .env (Node 24)
-# open http://127.0.0.1:31717 in local mode; see Cloudflare doc for remote mode
+pi install npm:@ludi-uni/pi-console@latest
 ```
 
-A workspace is one server-local folder used as Pi's working directory; there is no separate "project" entity. On a phone, start at Workspaces, choose a workspace, pick or create a session, then use Chat and Execution within that session. Back links and the phone's browser Back/Forward return through the session and workspace lists without stopping Pi. Settings (⚙) offers browser-local session view, app overview, language (settings/navigation only), appearance and Codex-compatible pet controls; preferences are not shared with pi-web. Orchestrator settings offer a quick path to bind a first model and prioritize models for coding or model-based planning. With a Pi session selected, the available Pi models can be picked to fill the provider and model ID; manual entry remains available without a session. All capability routes and backend bindings remain available under Advanced settings. Choosing a new preference retains existing routes as fallbacks. Changes are saved in the kit's local override files, not Pi's session model or shared defaults; they take effect on new runs and require an installed compatible kit. Pet packages (`pet.json` + spritesheet) are discovered on the server in the Pi Console, Codex and pi-web pet folders; Auto prefers Fio if installed. The pet roams on-screen; drag it by mouse or touch to move it out of the way. Tap an existing workspace to open it; to add a new one, use **Browse folders** (or enter an absolute path) under Add a workspace, then Add & open. Manage workspace lets you rename, pin or remove the registration; removing a workspace does not delete its folder or Pi sessions. Send Pi prompts in Chat. When the kit API is installed, start a separate **ludi-agent-kit orchestrator** run from Execution, bound to the selected Pi session and workspace, with status in Execution. Kit model routing is independent of the Pi session model and may incur provider charges. Kit runs do not support browser attachments or Stop. A new Pi session first receives a short acknowledgement prompt so its file is saved; after kit completion the console sends the bounded kit report to Pi for a normal assistant answer saved in that session. These Pi calls incur additional model cost. Kit progress is shown live in Chat but is not persisted there; child task detail is reconstructed from kit state in Execution. Pi prompts are paused while a kit run owns the same session, then resume when it finishes. Choose the Pi model and thinking level within a session; Context shows Pi's reported usage after a response. Attach up to four small UTF-8 text files or PNG/JPEG/GIF/WebP images from the browser before sending. Send a prompt and follow the conversation and Activity. Pi-provided thinking and tool calls appear separately in Chat; tap a command to expand its bounded invocation text. Assistant replies render Markdown with GFM tables, lists and fenced code (raw HTML and remote images are not rendered). Workspace-relative or absolute paths to `.txt`, `.md` and `.markdown` files in assistant text, Markdown links or inline code open a read-only preview. The preview resolves paths from the selected server-local workspace, rejects files outside it (including symlink escapes), and limits UTF-8 files to 256 KiB; it does not edit or download files. Follow links between previewed files and use Back to return; plain prose paths containing spaces are recognized when they include a directory prefix, while Markdown links and inline code also support spaces. On mobile, returning to Chat from Settings or browser focus follows the latest content. About the app displays the bundled version and license. Settings → Sessions can enable browser completion notifications for runs when this tab remains open but hidden; permission is requested only when enabled. The console does not predict when a run is almost finished, and a closed browser cannot receive these notifications. The Activity inbox shows observed foreground subagents and session-scoped background status reported by Pi, tasks, sessions needing input and recent completion results (dismissable, up to 24 hours while the server retains state); select one to open it. Recent issue banners can be dismissed and clear after a successful run or ten minutes. Execution history remains available separately. For a background subagent visible in Execution, **Inspect background result** fetches its bounded final output on demand from the session's pi-subagents extension; unavailable/expired artifacts or missing status snapshots cannot be reconstructed by the console. While a tool runs, its observed program/command is shown when Pi provides it. The Instructions button lists previous user prompts and jumps to the chosen message; Copy all sits below the assistant bubble. Sessions can be moved to the server's Windows Recycle Bin individually, or automatically after a configurable number of days since their last modification (off by default; enable in Settings → Automatic cleanup). This affects Pi session files shared with other apps. On Windows, Settings → Start with Windows installs or removes the current user's Pi Console Startup shortcut; it starts at sign-in. Pi installs do not expose a post-install hook, so the extension installs the shortcut on its first trusted interactive Pi session (or select Install now). The folder browser shows directories on the **machine running pi-console**, not the phone/browser device, and can create a subfolder in the currently open directory. **Open in Windows Explorer** opens only the selected registered local workspace on the host's interactive Windows desktop, including when clicked from a phone; it does not open the phone's file manager. Stop clears queued prompts and sends Pi `abort`. A browser reconnect does not kill its worker. A new unprompted session exists in the current server only until Pi writes its first session file on the first prompt.
+Pi を再起動するか `/reload` を実行してから、Pi で `/pi-console` を入力します。表示されたローカル URL を開き、ワークスペース（Pi の作業フォルダー）とセッションを選んでください。**インストールだけではサーバーは起動しません。**
 
-By default the server binds **only** to 127.0.0.1 with no authentication: do not expose the default mode through a tunnel/LAN. An **explicit** Cloudflare Tunnel + Access mode verifies signed Access JWTs on every request and still binds only to loopback; follow [`docs/cloudflare-access.md`](docs/cloudflare-access.md) before configuring a separate protected hostname. Installing the PWA does not make Pi available offline. Workspace and editable quick-prompt metadata are in `.pi-console/workspaces.json` (override directory with `PI_CONSOLE_DATA_DIR`), Pi sessions stay in Pi's session directory (override with `PI_CODING_AGENT_SESSION_DIR`). Canonical event history and foreground child progress are in memory; Pi owns chat history and the Orchestrator's existing SQLite owns task/trace history. The ludi-agent-kit npm Pi package is detected automatically; optional `PI_CONSOLE_KIT_ROOT` overrides discovery, and `PI_CONSOLE_ORCHESTRATOR_STORE` supplies a nondefault kit state DB path. The status adapter reads both sources without modifying their records. Explicitly selecting the kit send target invokes the installed kit API with an exact Pi-session binding and lets the kit write its own run store; a missing kit disables this target. An Orchestrator run is visible only with an exact validated Pi-session binding. The console does not cancel kit runs or resume pending kit decisions; use the kit's own controls for those actions.
+ソースからのローカル導入や `npm start` の手順は [運用・開発ガイド](docs/operations.ja.md#導入方法)をご覧ください。
 
-## License and distribution
+## 目的別ガイド
 
-Pi Console source code is offered under the [MIT License](LICENSE). Runtime dependency licenses and copyright notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and linked from Settings → About the app. Pi CLI is a separate installation; pet artwork is loaded from separately installed packages and is **not** covered by this project's license. Review the dependency inventory and rights to any artwork you add before redistributing a modified package.
+| やりたいこと | 説明 |
+| --- | --- |
+| 会話、ファイルのプレビュー、実行状況を使う | [使い方](docs/usage.ja.md) |
+| データの保存先、起動設定、テストを確認する | [運用・開発ガイド](docs/operations.ja.md) |
+| 旧版から安全に更新する | [更新前のバックアップと移行](docs/upgrade-storage.ja.md) |
+| 保護された遠隔アクセスを設定する | [Cloudflare Tunnel + Access（英語）](docs/cloudflare-access.md) |
+| 内部設計を調べる | [設計資料への案内](docs/operations.ja.md#設計資料) |
 
-The package is publicly available as [`@ludi-uni/pi-console`](https://www.npmjs.com/package/@ludi-uni/pi-console) (MIT). For a local distributable tarball, run `npm pack --dry-run` to inspect the included files, then `npm pack` if desired; `prepack` builds the browser assets. A consumer still needs a compatible Pi CLI and a Node.js/npm install of runtime dependencies. Do not publish or expose the unauthenticated loopback server directly on a public interface. See the installation steps above and the remote-access requirements in [`docs/cloudflare-access.md`](docs/cloudflare-access.md).
-
-## Tests
-
-```powershell
-npm run build
-npm test           # unit, fake Pi HTTP, isolated local-package install + real Pi RPC handshake (no model call)
-npm run test:real  # actual Pi; runs a harmless powershell command and a cancelled sleep
-npm run test:e2e   # Playwright + real Pi; uses installed Chrome channel
-```
-
-`test:real`/`test:e2e` invoke a configured provider and can incur a small model charge. See [`docs/phase-3-daily-driver.md`](docs/phase-3-daily-driver.md) for workspace/session/mobile/PWA/reconnect behavior. See [`docs/phase-2-observability.md`](docs/phase-2-observability.md) for real child/Orchestrator audit and [`docs/phase-2-execution-model.md`](docs/phase-2-execution-model.md) for correlation, state and reconnect rules. Phase 1 runtime: [`docs/phase-1-runtime.md`](docs/phase-1-runtime.md); Phase 0 contract: [`docs/phase-0-architecture-contract.md`](docs/phase-0-architecture-contract.md).
+ソースコードは [MIT License](LICENSE) です。依存関係と素材の権利については [配布時の注意](docs/operations.ja.md#ライセンスと配布)をご確認ください。

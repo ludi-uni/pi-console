@@ -7,7 +7,7 @@ import { WorkspaceStore, readSession, listSessions } from '../server/runtime/wor
 import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts, visibleExecutionRows } from '../web/ui-logic.ts';
 import type { ExecutionEvent, ExecutionNode, ExecutionStateSnapshot } from '../shared/types.ts';
 import ChatItem from '../web/ChatMessage.tsx';
-import MarkdownContent, { workspacePath } from '../web/MarkdownContent.tsx';
+import MarkdownContent, { workspacePath, workspaceReference } from '../web/MarkdownContent.tsx';
 import { completionIds, freshCompletions } from '../web/notification-logic.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -108,6 +108,17 @@ test('Markdown output supports GFM, safe links and file references',()=>{
   const spaced=renderToStaticMarkup(createElement(MarkdownContent,{text:'See C:\\Program Files\\My App\\notes.md and docs/my notes.md for details.'}));
   assert.match(spaced,/Open C:\\Program Files\\My App\\notes.md in workspace/);
   assert.match(spaced,/Open docs\/my notes.md in workspace/);
+  const source=renderToStaticMarkup(createElement(MarkdownContent,{text:'Open src/main.ts or `main.py`.'}));
+  assert.match(source,/Open src\/main.ts in workspace/);
+  assert.match(source,/Open main.py in workspace/);
+  assert.equal(workspacePath('payload.exe'),undefined);
+  assert.deepEqual(workspaceReference('C:\\Dev\\project\\main.ts:42:8'),{path:'C:\\Dev\\project\\main.ts',line:42});
+  assert.deepEqual(workspaceReference('src/main.ts#L42'),{path:'src/main.ts',line:42});
+  assert.equal(workspaceReference('src/main.ts:0'),undefined);
+  assert.equal(workspaceReference('src/main.ts:999999999999999999'),undefined);
+  const lines=renderToStaticMarkup(createElement(MarkdownContent,{text:'See src/main.ts:42 and [there](src/main.ts#L42), or `main.py:7`.'}));
+  assert.match(lines,/Open src\/main.ts:42 in workspace/);
+  assert.match(lines,/Open main.py:7 in workspace/);
 });
 
 test('completion notifications ignore initial history and repeat poll results',()=>{

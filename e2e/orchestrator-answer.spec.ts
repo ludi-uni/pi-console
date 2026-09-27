@@ -1,0 +1,52 @@
+import {test,expect} from '@playwright/test';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+
+test.use({serviceWorkers:'block'});
+test('mobile Execution answers an exact kit question without sending a Pi prompt',async({page})=>{
+  const root=await mkdtemp(join(tmpdir(),'pi-console-answer-ui-'));
+  let pending=true;let running=false;let retryReady=false;let answers=0;let retries=0;let piPrompts=0;
+  await page.route('**/api/orchestrator?*',route=>route.fulfill({json:{available:true,job:{running,needsInput:pending,runId:'run-one',request:'Review implementation',...(retryReady?{error:'Temporary kit failure'}:{})}}}));
+  await page.route('**/api/orchestrator/decisions?*',route=>route.fulfill({json:{runId:'run-one',canResume:retryReady,decisions:pending?[{id:'decision-one',runId:'run-one',question:'Proceed with changes?',reason:'User confirmation is required.',options:[{id:'yes',summary:'Proceed'},{id:'no',summary:'Stop'}],recommended:'yes'}]:[]}}));
+  await page.route('**/api/orchestrator/answer',route=>{const value=route.request().postDataJSON();expect(value.workspaceId).toBeTruthy();expect(value.sessionId).toBeTruthy();expect(value.runId).toBe('run-one');expect(value.decisionId).toBe('decision-one');expect(value.answer).toBe('yes');answers++;pending=false;running=true;void route.fulfill({json:{runId:'run-one',remaining:0,resuming:true}})});
+  await page.route('**/api/orchestrator/resume',route=>{const value=route.request().postDataJSON();expect(value.runId).toBe('run-one');expect(value.workspaceId).toBeTruthy();expect(value.sessionId).toBeTruthy();retries++;retryReady=false;running=true;void route.fulfill({json:{runId:'run-one',resuming:true}})});
+  await page.route('**/api/prompt',route=>{piPrompts++;void route.abort()});
+  try{
+    await page.setViewportSize({width:390,height:780});await page.goto('/');
+    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await page.getByRole('button',{name:'New Session'}).click();
+    await page.getByRole('button',{name:/Execution ·/}).click();
+    const question=page.getByRole('region',{name:'Orchestrator questions'});
+    await expect(question).toContainText('Proceed with changes?');
+    await expect(page.getByRole('status',{name:'Orchestrator run status'})).toContainText('Needs input');
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    await expect(page.getByLabel('Prompt',{exact:true})).toBeDisabled();
+    await page.getByRole('button',{name:'Answer in Execution'}).click();
+    await expect(question).toBeVisible();
+    await expect(question).toContainText('User confirmation is required.');
+    if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-kit-decision-mobile.png')});
+    await expect(question.getByRole('button',{name:'Submit answer'})).toBeDisabled();
+    await question.getByLabel('Answer to decision decision-one').selectOption('yes');
+    await question.getByRole('button',{name:'Submit answer'}).click();
+    await expect(question).toHaveCount(0);
+    running=false;retryReady=true;
+    await expect(question.getByRole('button',{name:'Retry continuation'})).toBeVisible({timeout:7000});
+    await expect(question).toContainText('Your answer is already saved');
+    if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-kit-retry-mobile.png')});
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    await expect(page.getByLabel('Prompt',{exact:true})).toBeDisabled();
+    await page.getByRole('button',{name:'Retry in Execution'}).click();
+    await question.getByRole('button',{name:'Continue Pi chat while kit is paused'}).click();
+    await expect(question).toContainText('Pi chat is available');
+    await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    await expect(page.getByLabel('Prompt',{exact:true})).toBeEnabled();
+    await page.getByRole('button',{name:/Execution ·/}).click();
+    await question.getByRole('button',{name:'Retry continuation'}).click();
+    await expect(question).toHaveCount(0);
+    expect(answers).toBe(1);expect(retries).toBe(1);expect(piPrompts).toBe(0);
+    const ws=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===root);
+    for(const s of (await(await page.request.get(`/api/sessions?workspaceId=${ws.id}`)).json()).sessions)await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:s.id}});
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{})}
+});

@@ -173,3 +173,20 @@ export const startOrchestration=async(ctx,args)=>{args.onProgress?.('開始: 計
     assert.equal(await readFile(join(root,'closed'),'utf8'),'yes');
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+
+test('waiting kit run exposes a question without saving a premature Pi report',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'pi-console-kit-waiting-'));
+  try{
+    for(const dir of ['lib/orchestrator','adapters/pi/lib'])await mkdir(join(root,dir),{recursive:true});
+    await writeFile(join(root,'lib/orchestrator/api.mjs'),`export const defaultStorePath=()=>'';
+export const loadOrchestrationContext=()=>({errors:[],session:{close(){}}});
+export const createRunHealth=()=>({});export const createRunRunner=()=>({});
+export const formatReport=()=> 'Do not save this interim report';
+export const startOrchestration=async()=>({runId:'waiting-run',status:'needs-user'});`);
+    await writeFile(join(root,'adapters/pi/lib/invoke.mjs'),'export const createPiInvoker=()=>()=>{};');
+    await writeFile(join(root,'adapters/pi/lib/subagent.mjs'),'export const createPiSubagentRunner=()=>()=>{};');
+    let reported='',needsInput=false;
+    assert.equal(await startKitRun(root,'session','C:/workspace','Question',undefined,text=>{reported=text},waiting=>{needsInput=waiting}),'waiting-run');
+    assert.equal(needsInput,true);assert.equal(reported,'');
+  }finally{await rm(root,{recursive:true,force:true})}
+});

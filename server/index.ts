@@ -17,7 +17,7 @@ const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-cons
 const assetsDir = fileURLToPath(new URL('../dist/', import.meta.url));
 const store = new WorkspaceStore(join(dataDir, 'workspaces.json'));
 await store.load();
-const runtime = new RuntimeManager(store);
+const runtime = new RuntimeManager(store, undefined, join(dataDir,'report-recovery'));
 const recycling = new SessionRecycling(join(dataDir,'session-retention.json'),runtime);
 await recycling.load();
 const port = Number(process.env.PORT ?? 31717);
@@ -71,6 +71,11 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await orchestratorSettings());
     if (req.method === 'POST' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await updateOrchestratorSettings(await body(req)));
     if (req.method === 'GET' && url.pathname === '/api/orchestrator') return respond(res, 200, await runtime.kitStatus(wid, sid));
+    if (req.method === 'GET' && url.pathname === '/api/orchestrator/decisions') return respond(res, 200, await runtime.kitDecisions(wid, sid));
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/answer') { const b=await body(req); return respond(res, 200, await runtime.answerOrchestrator(b.workspaceId,b.sessionId,b.runId,b.decisionId,b.answer)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/resume') { const b=await body(req); return respond(res, 200, await runtime.retryOrchestrator(b.workspaceId,b.sessionId,b.runId)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/retry') { const b=await body(req); return respond(res, 200, await runtime.retryKitReport(b.workspaceId,b.sessionId,b.runId)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/handled') { const b=await body(req); return respond(res, 200, await runtime.markKitReportHandled(b.workspaceId,b.sessionId,b.runId,b.confirmed)); }
     if (req.method === 'POST' && url.pathname === '/api/subagents/inspect') { const b = await body(req); return respond(res, 200, await runtime.inspectSubagent(b.workspaceId, b.sessionId, b.nodeId)); }
     if (req.method === 'POST' && url.pathname === '/api/orchestrator/start') { const b = await body(req); return respond(res, 202, await runtime.startOrchestrator(b.workspaceId, b.sessionId, b.request)); }
     if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await body(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? [], b.mode) }); }

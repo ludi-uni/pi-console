@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
+import { consoleDataDir } from './data-directory.mjs';
 import { fileURLToPath } from 'node:url';
 
 const serverEntry = fileURLToPath(new URL('../server/index.ts', import.meta.url));
@@ -18,7 +18,7 @@ export async function startConsole({ cwd = process.cwd(), env = process.env, tim
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be an integer from 1 to 65535');
   const childEnv = {
     ...env,
-    PI_CONSOLE_DATA_DIR: env.PI_CONSOLE_DATA_DIR || join(env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'pi-console'),
+    PI_CONSOLE_DATA_DIR: consoleDataDir(env),
     // The host Pi binary is authoritative; do not guess a different globally installed version.
     PI_CONSOLE_PI_COMMAND: env.PI_CONSOLE_PI_COMMAND || hostPiCli() || '',
   };

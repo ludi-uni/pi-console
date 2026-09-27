@@ -2,7 +2,7 @@ import React, { memo, useState } from 'react';
 import type { ChatMessage as Message } from '../shared/types.ts';
 import MarkdownContent from './MarkdownContent.tsx';
 export async function copyText(value:string) {await navigator.clipboard.writeText(value);}
-function ChatItem({message,activityLabel,onOpenFile}:{message:Message;activityLabel?:string;onOpenFile?:(path:string)=>void}) {
+function ChatItem({message,activityLabel,onOpenFile}:{message:Message;activityLabel?:string;onOpenFile?:(path:string,line?:number)=>void}) {
   const [copied,setCopied]=useState('');
   const copy=async(value:string,label:string)=>{try{await copyText(value);setCopied(`${label} copied`);setTimeout(()=>setCopied(''),2000);}catch{setCopied('Copy failed — check clipboard permission');}};
   return <article className="message" data-role={message.role} data-message-id={message.id} tabIndex={-1}>

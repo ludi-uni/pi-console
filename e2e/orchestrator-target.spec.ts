@@ -30,11 +30,11 @@ test('mobile Execution starts a kit run without a Pi prompt and keeps Chat clear
     await expect(card).not.toBeVisible();
     await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
     await expect(page.getByLabel('Chat output')).not.toContainText('Build a small plan');
-    await expect(page.getByText('This session’s Pi chat is paused until the orchestrator run finishes.')).toBeVisible();
+    await expect(page.getByText('Pi prompts are paused until the kit run finishes. Stop only applies to Pi runs.')).toBeVisible();
     await expect(page.getByLabel('Prompt',{exact:true})).toBeDisabled();
     job!.running=false;
     await expect(page.getByLabel('Prompt',{exact:true})).toBeEnabled({timeout:7000});
-    await expect(page.getByText('This session’s Pi chat is paused until the orchestrator run finishes.')).not.toBeVisible();
+    await expect(page.getByText('Pi prompts are paused until the kit run finishes. Stop only applies to Pi runs.')).not.toBeVisible();
     await page.getByRole('button',{name:/Execution ·/}).click();
     await expect(page.getByLabel('Orchestrator request')).toBeVisible();
     expect(piPrompts).toBe(0);

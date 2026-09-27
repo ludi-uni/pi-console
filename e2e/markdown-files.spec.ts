@@ -1,22 +1,27 @@
 import { test, expect } from '@playwright/test';
+test.use({serviceWorkers:'block'});
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('assistant Markdown renders and workspace paths preview only text/Markdown inside the selected workspace', async ({page}) => {
+test('assistant Markdown links open safe workspace text and code at referenced lines', async ({page}) => {
   const root=await mkdtemp(join(tmpdir(),'pi-console-markdown-'));
-  const workspace=join(root,'workspace');await mkdir(workspace);await mkdir(join(workspace,'docs'));
-  await writeFile(join(workspace,'docs','notes.md'),'# Notes\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n[Text file](note.txt)');
+  const workspace=join(root,'workspace');await mkdir(workspace);await mkdir(join(workspace,'docs'));await mkdir(join(workspace,'src'));
+  const notes='# Notes\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n[Text file](note.txt)';
+  await writeFile(join(workspace,'docs','notes.md'),notes);
+  const source=Array.from({length:55},(_,i)=>i===41?'export const value = 42;':`// line ${i+1}`).join('\n')+'\n';
+  await writeFile(join(workspace,'src','main.ts'),source);
   await writeFile(join(workspace,'note.txt'),'Plain <script>text</script>');
   await writeFile(join(root,'secret.md'),'secret outside');
   try {
+    await page.context().grantPermissions(['clipboard-read','clipboard-write']);
     await page.setViewportSize({width:390,height:844});await page.goto('/');
     await page.getByLabel('Workspace path').fill(workspace);
     await page.getByRole('button',{name:'Add & open'}).click();
     const ws=(await (await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===workspace);
     const rejected=await page.request.get(`/api/workspace/text?workspaceId=${ws.id}&path=${encodeURIComponent('../secret.md')}`);
     expect(rejected.status()).toBe(400);
-    const message={id:'markdown-answer',role:'assistant',complete:true,text:'# Result\n\n**Finished**. See docs/notes.md and `note.txt`.\n\n- [x] checked\n\n```ts\nconst x = 1;\n```\n\n[unsafe](javascript:alert(1))'};
+    const message={id:'markdown-answer',role:'assistant',complete:true,text:'# Result\n\n**Finished**. See docs/notes.md, src/main.ts:42, [source](src/main.ts#L42) and `note.txt`.\n\n- [x] checked\n\n```ts\nconst x = 1;\n```\n\n[unsafe](javascript:alert(1))'};
     await page.route('**/api/resume',async route=>{
       const response=await route.fetch(),body=await response.json();body.snapshot.chat=[message];body.snapshot.seq=1000000;
       await route.fulfill({response,body:JSON.stringify(body)});
@@ -34,6 +39,9 @@ test('assistant Markdown renders and workspace paths preview only text/Markdown 
     const dialog=page.getByRole('dialog',{name:'Workspace file preview'});
     await expect(dialog.getByRole('heading',{name:'Notes',exact:true})).toBeVisible();
     await expect(dialog.locator('table')).toBeVisible();
+    await dialog.getByRole('button',{name:'Copy file contents'}).click();
+    await expect(dialog.getByRole('status')).toHaveText('Copied');
+    expect((await page.evaluate(()=>navigator.clipboard.readText())).replace(/\r\n/g,'\n')).toBe(notes);
     await dialog.getByRole('button',{name:'Text file'}).click();
     await expect(dialog).toContainText('Plain <script>text</script>');
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-file-back.png')});
@@ -44,5 +52,17 @@ test('assistant Markdown renders and workspace paths preview only text/Markdown 
     await answer.getByRole('button',{name:'note.txt'}).click();
     await expect(dialog).toContainText('Plain <script>text</script>');
     await expect(dialog.locator('script')).toHaveCount(0);
+    await dialog.getByRole('button',{name:'Close file preview'}).click();
+    await answer.getByRole('button',{name:'src/main.ts:42'}).click();
+    await expect(dialog).toContainText('WORKSPACE FILE · Code');
+    await expect(dialog.locator('.source-line-target')).toHaveAttribute('data-line','42');
+    await expect(dialog.locator('.source-line-target')).toContainText('export const value = 42;');
+    await expect.poll(()=>dialog.locator('.file-preview-body').evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
+    if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-code-line-preview.png')});
+    await dialog.getByRole('button',{name:'Copy file contents'}).click();
+    expect((await page.evaluate(()=>navigator.clipboard.readText())).replace(/\r\n/g,'\n')).toBe(source);
+    await dialog.getByRole('button',{name:'Close file preview'}).click();
+    await answer.getByRole('button',{name:'source'}).click();
+    await expect(dialog.locator('.source-line-target')).toHaveAttribute('data-line','42');
   } finally { await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{}); }
 });
