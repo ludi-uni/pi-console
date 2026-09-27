@@ -11,6 +11,7 @@ import { SessionRecycling } from './runtime/session-recycling.ts';
 import { startupStatus, setStartup } from '../package/startup-manager.mjs';
 import { WorkspaceStore } from './runtime/workspaces.ts';
 import { readWorkspaceText } from './runtime/workspace-text.ts';
+import {openWorkspaceMedia,mediaRange} from './runtime/workspace-media.ts';
 import { accessConfig, allowedHost, allowedPost, createAccessVerifier } from './access.ts';
 
 const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-console');
@@ -33,7 +34,7 @@ async function body(req: IncomingMessage, maxLength = 1024 * 1024): Promise<any>
 const server = createServer(async (req, res) => {
   try {
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
-    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (!allowedHost(req.headers.host, access)) return respond(res, 403, { error: 'invalid host' });
     if (!access && ['cf-connecting-ip','cf-ray','x-forwarded-host','forwarded'].some(name=>req.headers[name])) return respond(res,403,{error:'remote mode not configured'});
     if (verifyAccess && !await verifyAccess(req.headers['cf-access-jwt-assertion'] as string | undefined)) return respond(res, 401, { error: 'Cloudflare Access authentication required' });
@@ -46,6 +47,16 @@ const server = createServer(async (req, res) => {
     const sid = url.searchParams.get('sessionId') ?? '';
     if (req.method === 'GET' && url.pathname === '/api/workspaces') return respond(res, 200, { workspaces: await store.listWithValidity() });
     if (req.method === 'GET' && url.pathname === '/api/workspace/text') return respond(res, 200, await readWorkspaceText(store, wid, url.searchParams.get('path') ?? ''));
+    if (req.method === 'GET' && (url.pathname === '/api/workspace/media/info'||url.pathname === '/api/workspace/media')) {
+      const media=await openWorkspaceMedia(store,wid,url.searchParams.get('path')??'');
+      if(url.pathname.endsWith('/info')){try{return respond(res,200,{path:media.path,format:media.format,mime:media.mime,size:media.size})}finally{await media.handle.close()}}
+      const range=mediaRange(typeof req.headers.range==='string'?req.headers.range:Array.isArray(req.headers.range)?'invalid':undefined,media.size);
+      if(range.status===416){await media.handle.close();res.writeHead(416,{'content-range':`bytes */${media.size}`,'accept-ranges':'bytes','cache-control':'no-store'});res.end();return}
+      res.writeHead(range.status,{'content-type':media.mime,'content-length':range.end-range.start+1,'accept-ranges':'bytes','cache-control':'private, no-store',...(range.status===206?{'content-range':`bytes ${range.start}-${range.end}/${media.size}`}:{})});
+      const stream=media.handle.createReadStream({start:range.start,end:range.end,autoClose:false});
+      res.once('close',()=>{stream.destroy();void media.handle.close()});
+      stream.on('error',error=>res.destroy(error));stream.pipe(res);return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/activity') return respond(res, 200, { sessions: await runtime.activity() });
     if (req.method === 'GET' && url.pathname === '/api/startup') return respond(res,200,await startupStatus());
     if (req.method === 'POST' && url.pathname === '/api/startup') {const b=await body(req);return respond(res,200,await setStartup(b.enabled))}

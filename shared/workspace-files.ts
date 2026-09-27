@@ -7,6 +7,13 @@ export const workspaceTextExtensions = [
   '.json', '.jsonc', '.yaml', '.yml', '.toml', '.xml'
 ] as const;
 
+export const workspaceMediaTypes: Record<string,{format:'image'|'video';mime:string}> = {
+  '.png':{format:'image',mime:'image/png'},'.jpg':{format:'image',mime:'image/jpeg'},'.jpeg':{format:'image',mime:'image/jpeg'},
+  '.gif':{format:'image',mime:'image/gif'},'.webp':{format:'image',mime:'image/webp'},
+  '.mp4':{format:'video',mime:'video/mp4'},'.webm':{format:'video',mime:'video/webm'},
+};
+export const workspaceMediaType=(extension:string)=>workspaceMediaTypes[extension.toLowerCase()];
+
 export function workspaceFileFormat(extension: string): 'markdown' | 'text' | 'code' | undefined {
   const lower = extension.toLowerCase();
   if (!workspaceTextExtensions.some(value => value === lower)) return undefined;

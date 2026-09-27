@@ -5,7 +5,7 @@ import { workspaceFileFormat } from '../../shared/workspace-files.ts';
 
 const maxBytes = 256 * 1024;
 
-export async function readWorkspaceText(store: WorkspaceStore, workspaceId: string, path: string): Promise<{path:string;content:string;format:'markdown'|'text'|'code'}> {
+export async function resolveWorkspaceFile(store: WorkspaceStore, workspaceId: string, path: string) {
   const workspace = store.get(workspaceId);
   if (typeof path !== 'string' || !path.trim() || path.length > 4096 || /[\x00-\x1f]/.test(path)) throw new Error('invalid file path');
   if (process.platform === 'win32' && (/^[A-Za-z]:(?![\\/])/.test(path) || (isAbsolute(path) && !/^[A-Za-z]:[\\/](?![\\/])/.test(path)))) throw new Error('invalid file path');
@@ -13,6 +13,11 @@ export async function readWorkspaceText(store: WorkspaceStore, workspaceId: stri
   const target = await fs.realpath(isAbsolute(path) ? path : resolve(root, path)).catch(() => { throw new Error('file not found or unavailable'); });
   const within = relative(root, target);
   if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) throw new Error('file is outside the workspace');
+  return {root,target,within};
+}
+
+export async function readWorkspaceText(store: WorkspaceStore, workspaceId: string, path: string): Promise<{path:string;content:string;format:'markdown'|'text'|'code'}> {
+  const {target,within}=await resolveWorkspaceFile(store,workspaceId,path);
   const extension = extname(target).toLowerCase();
   const format = workspaceFileFormat(extension);
   if (!format) throw new Error('unsupported text file extension');

@@ -14,8 +14,8 @@
 
 - Attach up to four small UTF-8 text files or PNG/JPEG/GIF/WebP images from the browser. Pi-provided thinking and tool calls appear separately; tap a command to expand its bounded invocation. **Instructions** jumps to past user prompts; **Copy all** is below an assistant answer.
 - Assistant answers render Markdown tables, lists and fenced code. Raw HTML and remote images are not rendered.
-- Paths in assistant prose, Markdown links or inline code to `.txt`, `.md`, `.markdown` and common source/configuration files (including `.ts`, `.py`, `.go`, `.json`, `.yaml`) open read-only previews inside the selected workspace. Plain prose paths containing spaces are recognized when they include a directory prefix.
-- Previews reject paths outside the workspace (including symlink escapes), binary or unsupported files, and UTF-8 files above 256 KiB. They cannot edit or download files. **Copy** copies the original contents, not rendered Markdown. Code has line numbers; `src/main.ts:42`, `src/main.ts:42:8` and `src/main.ts#L42` jump to a line. Follow links within previews and use **Back** to return.
+- Paths in assistant prose, Markdown links or inline code to `.txt`, `.md`, `.markdown`, common source/configuration files, PNG/JPEG/GIF/WebP images and MP4/WebM videos open read-only previews inside the selected workspace. Workspace-local Markdown images open on click; remote images never load automatically. Plain prose paths containing spaces are recognized when they include a directory prefix.
+- Text previews reject paths outside the workspace (including symlink escapes), binary or unsupported files, and UTF-8 files above 256 KiB. Images are limited to 20 MiB and videos to 512 MiB; file signatures must match their extensions. Video seeking uses byte ranges and playback depends on browser codec support. The console cannot edit files; its media endpoint does not prevent a browser from saving them. **Copy** copies original text, not rendered Markdown. Code has line numbers; `src/main.ts:42`, `src/main.ts:42:8` and `src/main.ts#L42` jump to a line. Follow links within previews and use **Back** to return.
 
 ## Execution and Orchestrator
 

@@ -2,10 +2,10 @@ import React from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Root } from 'mdast';
-import { workspaceFileFormat, workspaceTextExtensions } from '../shared/workspace-files.ts';
+import { workspaceFileFormat, workspaceMediaType, workspaceTextExtensions, workspaceMediaTypes } from '../shared/workspace-files.ts';
 
 type TreeNode = {type:string;value?:string;children?:TreeNode[];url?:string};
-const extensions=workspaceTextExtensions.map(value=>value.slice(1)).sort((a,b)=>b.length-a.length).join('|');
+const extensions=[...workspaceTextExtensions,...Object.keys(workspaceMediaTypes)].map(value=>value.slice(1)).sort((a,b)=>b.length-a.length).join('|');
 const lineSuffix=String.raw`(?::[1-9]\d*(?::\d+)?|#L[1-9]\d*)?`;
 const pathPattern=new RegExp(String.raw`(?:[A-Za-z]:[\\/]|(?:\.{1,2}|[\w.-]+)[\\/])[\w.()\\/ -]+?\.(?:${extensions})${lineSuffix}(?![\w])|[\w.()\\/-]+\.(?:${extensions})${lineSuffix}(?![\w])`,'gi');
 export function workspaceReference(value:string):{path:string;line?:number}|undefined {
@@ -16,7 +16,7 @@ export function workspaceReference(value:string):{path:string;line?:number}|unde
   if (/^(?:[a-z][a-z\d+.-]*:|\/\/|\\\\)/i.test(path) && !/^[a-z]:[\\/]/i.test(path)) return undefined;
   if (/[?#]/.test(path)) return undefined;
   const extension=path.match(/\.([a-z0-9]+)$/i)?.[1];
-  return extension&&workspaceFileFormat(`.${extension}`)?{path,...(line?{line}:{})}:undefined;
+  return extension&&(workspaceFileFormat(`.${extension}`)||!line&&workspaceMediaType(`.${extension}`))?{path,...(line?{line}:{})}:undefined;
 }
 export function workspacePath(value:string):string|undefined {return workspaceReference(value)?.path}
 function remarkWorkspacePaths() {
@@ -51,6 +51,6 @@ export default function MarkdownContent({text,onOpenFile,onCopyCode}:{text:strin
     a:({href,children,...props})=>{const reference=href&&localLink(href);return reference?<button type="button" className="file-link" onClick={()=>onOpenFile?.(reference.path,reference.line)} title={`Open ${reference.path}${reference.line?`:${reference.line}`:''} in workspace`}>{children}</button>:<a {...props} href={href} target="_blank" rel="noopener noreferrer">{children}</a>},
     pre:({children})=>{const code=React.isValidElement<{children?:React.ReactNode;className?:string}>(children)?children:undefined;const text=String(code?.props.children??'').replace(/\n$/,'');const language=code?.props.className?.replace(/^language-/, '')||'code';return <div className="code-block"><div className="code-head"><span>{language}</span>{onCopyCode&&<button aria-label="Copy code" onClick={()=>onCopyCode(text)}>Copy code</button>}</div><pre>{children}</pre></div>},
     code:({children,className,...props})=>{const content=String(children).trim();const reference=!className&&workspaceReference(content);return reference?<code {...props}><button type="button" className="file-link" onClick={()=>onOpenFile?.(reference.path,reference.line)} title={`Open ${reference.path}${reference.line?`:${reference.line}`:''} in workspace`}>{children}</button></code>:<code {...props} className={className}>{children}</code>},
-    img:({alt})=><span className="markdown-image">[Image: {alt||'not displayed'}]</span>
+    img:({alt,src})=>{const reference=src&&workspaceReference(src);return reference&&workspaceMediaType(`.${reference.path.split('.').at(-1)}`)?.format==='image'?<button type="button" className="file-link" onClick={()=>onOpenFile?.(reference.path)}>Preview image: {alt||reference.path}</button>:<span className="markdown-image">[Image: {alt||'not displayed'}]</span>}
   }}>{text}</ReactMarkdown></div>;
 }

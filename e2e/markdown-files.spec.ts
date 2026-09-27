@@ -1,17 +1,21 @@
 import { test, expect } from '@playwright/test';
 test.use({serviceWorkers:'block'});
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 test('assistant Markdown links open safe workspace text and code at referenced lines', async ({page}) => {
   const root=await mkdtemp(join(tmpdir(),'pi-console-markdown-'));
-  const workspace=join(root,'workspace');await mkdir(workspace);await mkdir(join(workspace,'docs'));await mkdir(join(workspace,'src'));
+  const workspace=join(root,'workspace');await mkdir(workspace);await mkdir(join(workspace,'docs'));await mkdir(join(workspace,'src'));await mkdir(join(workspace,'media'));
   const notes='# Notes\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n[Text file](note.txt)';
   await writeFile(join(workspace,'docs','notes.md'),notes);
   const source=Array.from({length:55},(_,i)=>i===41?'export const value = 42;':`// line ${i+1}`).join('\n')+'\n';
   await writeFile(join(workspace,'src','main.ts'),source);
   await writeFile(join(workspace,'note.txt'),'Plain <script>text</script>');
+  const image=await readFile(join('tests','fixtures','preview.png'));
+  await writeFile(join(workspace,'media','portrait.png'),image);
+  const video=await readFile(join('tests','fixtures','preview.mp4'));
+  await writeFile(join(workspace,'media','clip.mp4'),video);
   await writeFile(join(root,'secret.md'),'secret outside');
   try {
     await page.context().grantPermissions(['clipboard-read','clipboard-write']);
@@ -21,7 +25,15 @@ test('assistant Markdown links open safe workspace text and code at referenced l
     const ws=(await (await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===workspace);
     const rejected=await page.request.get(`/api/workspace/text?workspaceId=${ws.id}&path=${encodeURIComponent('../secret.md')}`);
     expect(rejected.status()).toBe(400);
-    const message={id:'markdown-answer',role:'assistant',complete:true,text:'# Result\n\n**Finished**. See docs/notes.md, src/main.ts:42, [source](src/main.ts#L42) and `note.txt`.\n\n- [x] checked\n\n```ts\nconst x = 1;\n```\n\n[unsafe](javascript:alert(1))'};
+    const outsideMedia=await page.request.get(`/api/workspace/media?workspaceId=${ws.id}&path=${encodeURIComponent('../secret.md')}`);
+    expect(outsideMedia.status()).toBe(400);
+    const imageResponse=await page.request.get(`/api/workspace/media?workspaceId=${ws.id}&path=media%2Fportrait.png`);
+    expect(imageResponse.headers()['content-type']).toBe('image/png');expect(await imageResponse.body()).toEqual(image);
+    const seek=await page.request.get(`/api/workspace/media?workspaceId=${ws.id}&path=media%2Fclip.mp4`,{headers:{Range:'bytes=4-7'}});
+    expect(seek.status()).toBe(206);expect(seek.headers()['content-range']).toBe(`bytes 4-7/${video.length}`);expect((await seek.body()).toString()).toBe('ftyp');
+    const invalidRange=await page.request.get(`/api/workspace/media?workspaceId=${ws.id}&path=media%2Fclip.mp4`,{headers:{Range:`bytes=${video.length}-`}});
+    expect(invalidRange.status()).toBe(416);
+    const message={id:'markdown-answer',role:'assistant',complete:true,text:'# Result\n\n**Finished**. See docs/notes.md, src/main.ts:42, [source](src/main.ts#L42) and `note.txt`.\n\n- [x] checked\n\n```ts\nconst x = 1;\n```\n\n![Portrait](media/portrait.png) and media/clip.mp4. [External image](https://example.com/image.png) must not load automatically.\n\n[unsafe](javascript:alert(1))'};
     await page.route('**/api/resume',async route=>{
       const response=await route.fetch(),body=await response.json();body.snapshot.chat=[message];body.snapshot.seq=1000000;
       await route.fulfill({response,body:JSON.stringify(body)});
@@ -61,6 +73,18 @@ test('assistant Markdown links open safe workspace text and code at referenced l
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-code-line-preview.png')});
     await dialog.getByRole('button',{name:'Copy file contents'}).click();
     expect((await page.evaluate(()=>navigator.clipboard.readText())).replace(/\r\n/g,'\n')).toBe(source);
+    await dialog.getByRole('button',{name:'Close file preview'}).click();
+    await answer.getByRole('button',{name:'Preview image: Portrait'}).click();
+    await expect(dialog.locator('img.file-preview-media')).toBeVisible();
+    await expect(dialog.locator('img.file-preview-media')).toHaveJSProperty('naturalWidth',96);
+    if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-image-preview.png')});
+    await expect(dialog.getByRole('button',{name:'Copy file contents'})).toBeDisabled();
+    await dialog.getByRole('button',{name:'Close file preview'}).click();
+    await answer.getByRole('button',{name:'media/clip.mp4'}).click();
+    await expect(dialog.locator('video.file-preview-media')).toBeVisible();
+    await expect(dialog.locator('video.file-preview-media')).toHaveAttribute('controls','');
+    await expect.poll(()=>dialog.locator('video.file-preview-media').evaluate((node:HTMLVideoElement)=>node.videoWidth)).toBe(16);
+    if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-video-preview.png')});
     await dialog.getByRole('button',{name:'Close file preview'}).click();
     await answer.getByRole('button',{name:'source'}).click();
     await expect(dialog.locator('.source-line-target')).toHaveAttribute('data-line','42');
