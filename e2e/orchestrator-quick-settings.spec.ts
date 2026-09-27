@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('first-model setup works without opening advanced settings', async ({ page }) => {
   const config = {
@@ -22,7 +24,8 @@ test('first-model setup works without opening advanced settings', async ({ page 
   await page.getByLabel('Starter model').fill('test-model');
   await page.getByRole('button', { name: 'Connect model' }).click();
   expect(saved).toEqual({ kind: 'backend', name: 'first', provider: 'openai-codex', model: 'test-model' });
-  await expect(page.getByText('1/1 routes have a configured model', { exact: false })).toBeVisible();
+  await expect(page.getByText('Configured routes: 1/1')).toBeVisible();
+  await expect(page.getByText('Provider access: Not verified')).toBeVisible();
   await expect(page.getByLabel('first provider')).not.toBeVisible();
 });
 
@@ -48,14 +51,17 @@ test('Pi session catalog fills provider and ID without changing the session mode
   });
   await page.goto('/?view=settings');
   await page.getByRole('button', { name: 'Orchestrator' }).click();
-  await page.getByLabel('Starter available Pi model').selectOption(JSON.stringify(['p2', 'shared']));
+  await page.getByLabel('Starter available Pi model search').fill('shared');
+  await page.getByLabel('Starter available Pi model provider').selectOption('p2');
+  await expect(page.getByLabel('Starter available Pi model',{exact:true}).locator('option')).toHaveCount(2);
+  await page.getByLabel('Starter available Pi model',{exact:true}).selectOption(JSON.stringify(['p2', 'shared']));
   await expect(page.getByLabel('Starter provider')).toHaveValue('p2');
   await expect(page.getByLabel('Starter model')).toHaveValue('shared');
   expect(saved).toBeUndefined();
   await page.getByRole('button', { name: 'Connect model' }).click();
   expect(saved).toEqual({ kind: 'backend', name: 'first', provider: 'p2', model: 'shared' });
   await page.locator('.orchestrator-advanced summary').click();
-  await page.getByLabel('first available Pi model').selectOption(JSON.stringify(['p2', 'newer']));
+  await page.getByLabel('first available Pi model',{exact:true}).selectOption(JSON.stringify(['p2', 'newer']));
   await expect(page.getByLabel('first model', { exact: true })).toHaveValue('newer');
   await page.getByRole('button', { name: 'Save model' }).click();
   expect(saved).toEqual({ kind: 'backend', name: 'first', provider: 'p2', model: 'newer' });
@@ -82,7 +88,9 @@ test('quick setup prioritizes a configured model while preserving fallbacks; adv
   await page.setViewportSize({ width: 390, height: 780 });
   await page.goto('/?view=settings');
   await page.getByRole('button', { name: 'Orchestrator' }).click();
-  await expect(page.getByText('2/2 routes have a configured model', { exact: false })).toBeVisible();
+  await expect(page.getByText('Configured routes: 2/2')).toBeVisible();
+  await expect(page.getByText('Provider access: Not verified')).toBeVisible();
+  if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-ux-access-status.png')});
   await expect(page.getByLabel('first provider')).not.toBeVisible();
   await page.getByLabel('strong-code preferred model').selectOption('third');
   const quick = page.locator('.orchestrator-quick-route').filter({ has: page.getByLabel('strong-code preferred model') });

@@ -17,7 +17,7 @@ test('registered workspace offers a host Explorer action without accepting arbit
     await page.setViewportSize({ width: 390, height: 780 });
     await page.goto('/');
     await page.getByRole('button', { name: workspace.name, exact: false }).first().click();
-    const button = page.getByRole('button', { name: 'Open in Windows Explorer' });
+    const button = page.getByRole('button', { name: 'Open on host PC' });
     await expect(button).toBeVisible();
     await button.click();
     await expect(page.locator('.session-context .workspace-explorer-notice')).toHaveText('Opened on the host Windows desktop.');

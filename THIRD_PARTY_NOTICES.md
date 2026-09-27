@@ -6,6 +6,8 @@ Pi Console uses the following npm packages at runtime (versions from `package-lo
 | --- | --- | --- | --- |
 | [react](https://github.com/facebook/react) | 19.3.0 | MIT | Browser UI |
 | [react-dom](https://github.com/facebook/react) | 19.3.0 | MIT | Browser UI |
+| [react-markdown](https://github.com/remarkjs/react-markdown) | 10.1.0 | MIT | Safe Markdown rendering |
+| [remark-gfm](https://github.com/remarkjs/remark-gfm) | 4.0.1 | MIT | GitHub Flavored Markdown support |
 | [scheduler](https://github.com/facebook/react) | 0.28.0 | MIT | React dependency |
 | [jose](https://github.com/panva/jose) | 6.2.12 | MIT | Access JWT verification |
 | [tsx](https://github.com/privatenumber/tsx) | 4.23.15 | MIT | Server TypeScript runtime |
@@ -19,6 +21,9 @@ The project also uses development-only tools (not shipped as application runtime
 The MIT license text below applies to each runtime package listed above. Copyright statements from their installed license files:
 
 - react, react-dom, scheduler: Copyright (c) Meta Platforms, Inc. and affiliates.
+- react-markdown: Copyright (c) Espen Hovlandsdal
+- remark-gfm: Copyright (c) Titus Wormer <tituswormer@gmail.com>
+- Markdown parser and renderer transitive dependencies (micromark, mdast, hast, unist, vfile and related packages): MIT; retain their installed license files on redistribution.
 - jose: Copyright (c) 2018 Filip Skokan
 - tsx: Copyright (c) Hiroki Osame <hiroki.osame@gmail.com>
 - esbuild and its platform binaries: Copyright (c) 2020 Evan Wallace

@@ -1,4 +1,5 @@
-const CACHE='pi-console-shell-v2';
+const CACHE='pi-console-shell-v3';
+self.addEventListener('notificationclick',event=>{event.notification.close();event.waitUntil((async()=>{const tabs=await self.clients.matchAll({type:'window',includeUncontrolled:true});const current=tabs.find(tab=>new URL(tab.url).origin===self.location.origin);if(current)await current.focus();else await self.clients.openWindow('/')})());});
 self.addEventListener('install',event=>{event.waitUntil((async()=>{const cache=await caches.open(CACHE);await cache.addAll(['/','/manifest.webmanifest','/icon-192.png','/icon-512.png','/icon-maskable.svg']);const html=await(await cache.match('/')).text();const assets=[...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(m=>m[1]);await cache.addAll(assets);await self.skipWaiting();})());});
 self.addEventListener('activate',event=>{event.waitUntil(Promise.all([caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))),self.clients.claim()]));});
 self.addEventListener('fetch',event=>{

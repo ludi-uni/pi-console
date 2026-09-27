@@ -10,6 +10,7 @@ import { orchestratorSettings, updateOrchestratorSettings } from './adapters/orc
 import { SessionRecycling } from './runtime/session-recycling.ts';
 import { startupStatus, setStartup } from '../package/startup-manager.mjs';
 import { WorkspaceStore } from './runtime/workspaces.ts';
+import { readWorkspaceText } from './runtime/workspace-text.ts';
 import { accessConfig, allowedHost, allowedPost, createAccessVerifier } from './access.ts';
 
 const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-console');
@@ -44,6 +45,7 @@ const server = createServer(async (req, res) => {
     const wid = url.searchParams.get('workspaceId') ?? '';
     const sid = url.searchParams.get('sessionId') ?? '';
     if (req.method === 'GET' && url.pathname === '/api/workspaces') return respond(res, 200, { workspaces: await store.listWithValidity() });
+    if (req.method === 'GET' && url.pathname === '/api/workspace/text') return respond(res, 200, await readWorkspaceText(store, wid, url.searchParams.get('path') ?? ''));
     if (req.method === 'GET' && url.pathname === '/api/activity') return respond(res, 200, { sessions: await runtime.activity() });
     if (req.method === 'GET' && url.pathname === '/api/startup') return respond(res,200,await startupStatus());
     if (req.method === 'POST' && url.pathname === '/api/startup') {const b=await body(req);return respond(res,200,await setStartup(b.enabled))}

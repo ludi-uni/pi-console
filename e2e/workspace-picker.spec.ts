@@ -63,7 +63,17 @@ test('mobile drill-down keeps workspace and session context while switching view
     const settings=(await(await page.request.get(`/api/session/options?workspaceId=${workspaceEntry.id}&sessionId=${sessionEntry.id}`)).json());
     await expect(model).toHaveValue(`${settings.model.provider}::${settings.model.id}`);
     const alternate=settings.models.find((m:any)=>m.provider!==settings.model.provider||m.id!==settings.model.id);
-    if(alternate){await model.selectOption(`${alternate.provider}::${alternate.id}`);await expect(model).toHaveValue(`${alternate.provider}::${alternate.id}`);await model.selectOption(`${settings.model.provider}::${settings.model.id}`);}
+    if(alternate){
+      await page.getByRole('button',{name:'Find models'}).click();
+      await page.getByLabel('Model provider').selectOption(alternate.provider);
+      await page.getByLabel('Search models').fill(alternate.id);
+      await model.selectOption(`${alternate.provider}::${alternate.id}`);
+      await expect(model).toHaveValue(`${alternate.provider}::${alternate.id}`);
+      await page.getByRole('button',{name:'Find models'}).click();
+      await page.getByLabel('Model provider').selectOption(settings.model.provider);
+      await page.getByLabel('Search models').fill(settings.model.id);
+      await model.selectOption(`${settings.model.provider}::${settings.model.id}`);
+    }
     const thinking=page.getByLabel('Thinking',{exact:true});
     const nextLevel=settings.thinkingLevels.find((level:string)=>level!==settings.thinkingLevel);
     if(nextLevel){await thinking.selectOption(nextLevel);await expect(thinking).toHaveValue(nextLevel);await thinking.selectOption(settings.thinkingLevel);}

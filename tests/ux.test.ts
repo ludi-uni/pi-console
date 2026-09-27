@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { WorkspaceStore, readSession, listSessions } from '../server/runtime/workspaces.ts';
 import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts, visibleExecutionRows } from '../web/ui-logic.ts';
 import type { ExecutionEvent, ExecutionNode, ExecutionStateSnapshot } from '../shared/types.ts';
-import ChatItem, { splitCode } from '../web/ChatMessage.tsx';
+import ChatItem from '../web/ChatMessage.tsx';
+import MarkdownContent, { workspacePath } from '../web/MarkdownContent.tsx';
+import { completionIds, freshCompletions } from '../web/notification-logic.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import KitRunCard, { kitRequestTitle, kitRunProgress } from '../web/KitRunCard.tsx';
@@ -94,10 +96,29 @@ test('kit progress and final report render as separate, escaped chat content',()
   assert.match(markup,/最終結果は Pi の応答として保存します/);
 });
 
-test('quick prompts, code fences and connection states are deterministic',()=>{
+test('Markdown output supports GFM, safe links and file references',()=>{
+  const markup=renderToStaticMarkup(createElement(MarkdownContent,{text:'# Heading\n\n**bold** and [notes](docs/notes.md), `README.md`\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n\n```ts\nconst x=1;\n```\n\n<script>alert(1)</script>\n\n[unsafe](javascript:alert(1))'}));
+  assert.match(markup,/<h1>Heading<\/h1>/);assert.match(markup,/<strong>bold<\/strong>/);
+  assert.match(markup,/<table>/);assert.match(markup,/type="checkbox"/);
+  assert.match(markup,/Copy code|const x=1/);
+  assert.match(markup,/Open docs\/notes.md in workspace/);assert.match(markup,/Open README.md in workspace/);
+  assert.doesNotMatch(markup,/<script>/);assert.doesNotMatch(markup,/href="javascript:/);
+  assert.equal(workspacePath('https://example.com/readme.md'),undefined);
+  assert.equal(workspacePath('C:\\Dev\\project\\README.md'),'C:\\Dev\\project\\README.md');
+  const spaced=renderToStaticMarkup(createElement(MarkdownContent,{text:'See C:\\Program Files\\My App\\notes.md and docs/my notes.md for details.'}));
+  assert.match(spaced,/Open C:\\Program Files\\My App\\notes.md in workspace/);
+  assert.match(spaced,/Open docs\/my notes.md in workspace/);
+});
+
+test('completion notifications ignore initial history and repeat poll results',()=>{
+  const done={sessionId:'s',workspaceId:'w',sessionName:'work',workspaceName:'space',running:false,decisionCount:0,updatedAt:'',work:[],completion:{id:'done-1',status:'completed' as const,at:''}};
+  assert.deepEqual(freshCompletions(undefined,[done]),[]);
+  assert.deepEqual(freshCompletions(new Set(),[done]),[done]);
+  assert.deepEqual(freshCompletions(completionIds([done]),[done]),[]);
+});
+
+test('quick prompts and connection states are deterministic',()=>{
   assert.equal(validQuickPrompts(['Edit this']),true);assert.equal(validQuickPrompts(Array(9).fill('x')),false);
-  assert.deepEqual(splitCode('before\n```ts\nconst x=1;\n```\nafter').map(p=>p.type),['text','code','text']);
-  assert.equal(splitCode('```js\nline\n```')[0].text,'line');
   for(const [input,label] of [
     [{online:false,server:false,sse:'offline'},'Browser offline'],
     [{online:true,server:false,sse:'offline'},'Server unavailable'],

@@ -19,6 +19,7 @@ test('remote-mode HTTP fails closed for HTML, API, SSE, invalid Host and forged 
     });
     assert.equal((await request('/')).status,401);
     assert.equal((await request('/api/workspaces')).status,401);
+    assert.equal((await request('/api/workspace/text?workspaceId=x&path=README.md')).status,401);
     assert.equal((await request('/api/activity')).status,401);
     assert.equal((await request('/api/startup')).status,401);
     assert.equal((await request('/api/startup',{},'POST')).status,401);
