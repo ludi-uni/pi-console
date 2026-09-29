@@ -1,6 +1,6 @@
 # Third-party notices
 
-Pi Console uses the following npm packages at runtime (versions from `package-lock.json` at the time of this notice). The Pi CLI is installed separately and is **not** included in this repository or package. Pet artwork is loaded from separately installed packages; no pet sprites are included here. This list does not grant rights to redistribute third-party artwork.
+Pi Console uses the following npm packages at runtime (versions from `package-lock.json` at the time of this notice). The Pi CLI is installed separately and is **not** included in this repository or package. Fio artwork is bundled at `package/pets/fio/spritesheet.webp` under the separate [Fio Character Asset License](package/pets/fio/FIO_ASSET_LICENSE.md), copyright © DOLL Project / Ludi; it is **not** covered by the pi-console MIT software license. Other pet artwork may be loaded from separately installed packages. Official Codex built-in pet artwork is not distributed. This list does not grant rights to redistribute third-party artwork.
 
 | Package | Version | License | Use |
 | --- | --- | --- | --- |

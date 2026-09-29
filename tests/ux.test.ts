@@ -47,13 +47,18 @@ test('session title fallback, recent ordering, search and running first',async()
 test('Recent issue clears on success, dismissal or expiry; newer failures remain visible',()=>{
   const now=Date.parse('2026-01-01T12:00:00Z');
   const event=(seq:number,type:ExecutionEvent['type'],minutesAgo:number):ExecutionEvent=>({schemaVersion:1,eventId:`event-${seq}`,seq,timestamp:new Date(now-minutesAgo*60_000).toISOString(),workspaceId:'w',sessionId:'s',runId:'r',type,entityId:'r',source:'pi-rpc',certainty:'observed',payload:{}});
-  const failed=event(1,'ToolFailed',2),success=event(2,'RunCompleted',1),newFailure=event(3,'RunFailed',0);
+  const failed=event(1,'ToolFailed',0.05),success=event(2,'RunCompleted',0.03),newFailure=event(3,'RunFailed',0);
   assert.equal(recentIssue([failed],[],now)?.eventId,failed.eventId);
   assert.equal(recentIssue([failed,success],[],now),undefined);
   assert.equal(recentIssue([failed,success,newFailure],[],now)?.eventId,newFailure.eventId);
   assert.equal(recentIssue([failed,success,newFailure],[newFailure.eventId],now),undefined);
-  assert.equal(recentIssue([event(4,'RunFailed',11)],[],now),undefined);
-  assert.equal(recentIssue([event(4,'RunFailed',11),event(5,'ToolFailed',1)],[],now)?.eventId,'event-5');
+  const expired=event(4,'RunFailed',0.2),held={eventId:expired.eventId,until:now+7000};
+  assert.equal(recentIssue([expired],[],now),undefined);
+  assert.equal(recentIssue([expired],[],now,held)?.eventId,expired.eventId);
+  assert.equal(recentIssue([expired],[],now+7000,held),undefined);
+  assert.equal(recentIssue([expired],[expired.eventId],now,held),undefined);
+  assert.equal(recentIssue([expired,event(5,'RunCompleted',0.05)],[],now,held),undefined);
+  assert.equal(recentIssue([expired,event(6,'ToolFailed',0.05)],[],now)?.eventId,'event-6');
 });
 test('completed subagent remains visible in Now while unrelated completed tools stay hidden',()=>{
   const make=(id:string,kind:ExecutionNode['kind'],parentId?:string):ExecutionNode=>({id,kind,parentId,label:id,status:'completed',correlation:'explicit',sourceKind:'pi',updatedAt:'2026-01-01T00:00:00Z'});
@@ -89,7 +94,10 @@ test('assistant thought and command are separate, collapsed, and escaped',()=>{
 });
 
 test('kit progress and final report render as separate, escaped chat content',()=>{
+  const active=renderToStaticMarkup(createElement(KitChatReport,{job:{running:true,request:'test',progress:['進捗あり']}}));
+  assert.match(active,/<details[^>]*open=""/);assert.match(active,/aria-live="polite"/);
   const markup=renderToStaticMarkup(createElement(KitChatReport,{job:{running:false,request:'test',progress:['計画: <script>','報告受信'],report:'完了: <img>'}}));
+  assert.doesNotMatch(markup,/<details[^>]*open=""/);
   assert.match(markup,/計画: &lt;script&gt;/);
   assert.match(markup,/報告受信/);
   assert.match(markup,/完了: &lt;img&gt;/);

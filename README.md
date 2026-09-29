@@ -20,6 +20,10 @@ Pi を再起動するか `/reload` を実行してから、Pi で `/pi-console` 
 
 ソースからのローカル導入や `npm start` の手順は [運用・開発ガイド](docs/operations.ja.md#導入方法)をご覧ください。
 
+### 任意のペット素材
+
+フィオ（素材の権利表示：DOLL Project / Ludi）は `package/pets/fio/` に画像と設定を同梱しています。画像にはソフトウェアの MIT License ではなく別途 [Fio Character Asset License](package/pets/fio/FIO_ASSET_LICENSE.md) が適用されます。Codex やユーザー領域のパッケージなしで利用できます（8 列 × 11 行、バージョン 2）。Codex 公式の組み込みペット画像は配布していません。Pi Console は OpenAI と無関係の独立したプロジェクトであり、OpenAI の承認を受けていません。サーバーの `~/.pi-console/pets`、`~/.codex/pets`、従来の Pi agent の保存先も検索し、カスタムパッケージを優先します。設定 → ペットで保存元・種類の選択と再検索ができます。利用可能な画像がない場合はペットを表示しません。利用権のある素材だけを使用してください。
+
 ## 目的別ガイド
 
 | やりたいこと | 説明 |

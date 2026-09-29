@@ -34,8 +34,8 @@ export default function KitRunCard({ job, nodes, onRetryReport, onMarkHandled }:
   const title = kitRequestTitle(job.request);
   const task = (node: ExecutionNode) => <li key={node.id}><b data-status={node.status}>{node.status}</b><span title={node.label}>{node.label}</span></li>;
   return <section className="kit-run-status" aria-label="Orchestrator run status" role="status">
-    <div className="kit-run-heading"><strong>ludi-agent-kit</strong><b data-status={job.running ? 'running' : job.error||job.reportError ? 'failed' : job.needsInput ? 'waiting' : 'completed'}>{job.preparing ? 'Preparing session' : job.reporting && job.running ? 'Saving report' : job.running ? 'Running' : job.error ? 'Failed' : job.reportError ? 'Report not saved' : job.reportHandled ? 'Handled manually' : job.needsInput ? 'Needs input' : 'Finished'}</b></div>
-    <h3 title={title}>{title}</h3>
+    <details className="kit-run-details"><summary className="kit-run-heading"><strong>ludi-agent-kit · {title}</strong><b data-status={job.running ? 'running' : job.error||job.reportError ? 'failed' : job.needsInput ? 'waiting' : 'completed'}>{job.preparing ? 'Preparing session' : job.reporting && job.running ? 'Saving report' : job.running ? 'Running' : job.error ? 'Failed' : job.reportError ? 'Report not saved · Open to resolve' : job.reportHandled ? 'Handled manually' : job.needsInput ? 'Needs input' : 'Finished'}</b></summary>
+    <div className="kit-run-body"><h3 title={title}>{title}</h3>
     {root ? <><p>{tasks.length ? `${done}/${tasks.length} tasks done · ${running} running${waiting ? ` · ${waiting} pending` : ''}${failed ? ` · ${failed} failed` : ''}` : 'No tasks reported yet.'}{agentRunning ? ` · ${agentRunning} ${agentRunning === 1 ? 'agent' : 'agents'} running` : ''}</p>
       {!!tasks.length && <ul className="kit-run-tasks">{tasks.slice(0,4).map(task)}</ul>}
       {tasks.length > 4 && <details><summary>Show all {tasks.length} tasks</summary><ul className="kit-run-tasks">{tasks.slice(4).map(task)}</ul></details>}
@@ -48,5 +48,6 @@ export default function KitRunCard({ job, nodes, onRetryReport, onMarkHandled }:
     {job.error && <p className="kit-run-error" role="alert">{job.error}</p>}
     {job.runId && <small>Run ID: {job.runId}</small>}
     <details><summary>Full request</summary><pre>{job.request}</pre></details>
+    </div></details>
   </section>;
 }

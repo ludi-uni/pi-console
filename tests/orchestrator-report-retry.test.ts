@@ -92,6 +92,10 @@ test('retry saves only the missing Pi report and never sends a possibly delivere
     assert.deepEqual(await restoredReady.retryKitReport(workspace.id,session.id,'run-one'),{runId:'run-one',retrying:true});
     for(let i=0;i<30;i++){if(!(await restoredReady.kitStatus(workspace.id,session.id)).job?.running)break;await new Promise(resolve=>setTimeout(resolve,10))}
     assert.equal(prompts,2);assert.equal(await recovery.read(session.id),undefined);
+    const saving=(restoredReady as any).kitRuns.get(session.id);
+    state.preparePrompt('saving kit report');state.ingest({type:'agent_start'});saving.running=true;saving.reporting=true;
+    await assert.rejects(restoredReady.stop(workspace.id,session.id),/cannot stop while the orchestrator report is being saved/);
+    assert.ok(state.activeRunId,'blocked Stop must not clear the Pi report run');
   }finally{
     if(oldKit===undefined)delete process.env.PI_CONSOLE_KIT_ROOT;else process.env.PI_CONSOLE_KIT_ROOT=oldKit;
     if(oldStore===undefined)delete process.env.PI_CONSOLE_ORCHESTRATOR_STORE;else process.env.PI_CONSOLE_ORCHESTRATOR_STORE=oldStore;

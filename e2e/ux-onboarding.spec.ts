@@ -16,9 +16,13 @@ test('empty mobile sessions foreground creation and explain costs before a run',
     await expect(page.getByLabel('Search sessions')).toHaveCount(0);
     await expect(page.getByLabel('Session',{exact:true})).toHaveCount(0);
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-ux-empty-sessions.png')});
+    const created=page.waitForResponse(r=>r.url().endsWith('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
+    const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
     await expect(page.getByText('Sending a prompt calls the selected Pi model; provider charges may apply.')).toBeVisible();
     await page.getByRole('button',{name:/Execution ·/}).click();
+    await expect(page.getByText(/Additional model calls: a new session first gets a Pi acknowledgement/)).not.toBeVisible();
+    await page.getByText('New orchestrator run',{exact:true}).click();
     await expect(page.getByText(/Additional model calls: a new session first gets a Pi acknowledgement/)).toBeVisible();
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-ux-cost-note.png')});
     await page.getByRole('button',{name:'← Chat'}).click();

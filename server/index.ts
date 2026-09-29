@@ -69,7 +69,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/directories') return respond(res, 200, await listDirectories(url.searchParams.get('path') ?? undefined));
     if (req.method === 'POST' && url.pathname === '/api/directories/create') { const b = await body(req); return respond(res, 200, await createDirectory(b.parent, b.name)); }
     if (req.method === 'GET' && url.pathname === '/api/pets') return respond(res,200,{pets:await listPets()});
-    if (req.method === 'GET' && url.pathname === '/api/pet/file') {try{const {data,mime}=await petFile(url.searchParams.get('pet')??'',url.searchParams.get('file')??'');res.writeHead(200,{'content-type':mime,'cache-control':'private, max-age=300'});res.end(data);return;}catch{return respond(res,404,{error:'pet not found'});}}
+    if (req.method === 'GET' && url.pathname === '/api/pet/file') {try{const {data,mime}=await petFile(url.searchParams.get('pet')??'',url.searchParams.get('file')??'',undefined,url.searchParams.get('source')??undefined);res.writeHead(200,{'content-type':mime,'cache-control':'private, max-age=300'});res.end(data);return;}catch{return respond(res,404,{error:'pet not found'});}}
     if (req.method === 'GET' && url.pathname === '/api/quick-prompts') return respond(res,200,{prompts:store.quickPrompts()});
     if (req.method === 'POST' && url.pathname === '/api/quick-prompts') { const b=await body(req);return respond(res,200,{prompts:await store.savePrompts(b.prompts)}); }
     if (req.method === 'POST' && url.pathname === '/api/workspaces') { const b = await body(req); return respond(res, 200, { workspace: await store.add(b.path) }); }

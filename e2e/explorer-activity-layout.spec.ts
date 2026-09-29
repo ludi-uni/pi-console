@@ -45,6 +45,10 @@ test('Activity inbox leaves room for Send and Execution on desktop and does not 
     await page.getByRole('combobox', { name: 'Session', exact: true }).selectOption(session.id);
     const inbox = page.getByRole('region', { name: 'Activity notifications' });
     await expect(inbox).toBeVisible();
+    await expect(inbox.getByRole('button', { name: /Running activity 0/ })).not.toBeVisible();
+    await page.screenshot({ path: join(tmpdir(), 'pi-console-activity-collapsed-desktop.png') });
+    await inbox.locator('summary').click();
+    await expect(inbox.getByRole('button', { name: /Running activity 0/ })).toBeVisible();
     const send = page.getByRole('button', { name: 'Send', exact: true });
     await expect(send).toBeVisible();
     for (const [width, height] of [[1366, 768], [1024, 700]]) {

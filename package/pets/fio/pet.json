@@ -1,0 +1,9 @@
+{
+  "id": "fio",
+  "displayName": "Fio",
+  "author": "DOLL",
+  "format": "codex-compatible",
+  "description": "Fio companion with an 8-column, 11-row spritesheet.",
+  "spriteVersionNumber": 2,
+  "spritesheetPath": "spritesheet.webp"
+}

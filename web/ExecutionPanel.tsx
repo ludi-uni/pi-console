@@ -1,13 +1,16 @@
-import React, { memo, useMemo, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ExecutionNode, ExecutionStateSnapshot, ExecutionEvent } from '../shared/types.ts';
 import { visibleExecutionRows } from './ui-logic.ts';
 const line = (node:ExecutionNode) => [node.action,node.attempt&&node.attempt>1?`attempt ${node.attempt}`:undefined,node.model,node.provider,node.blockedReason].filter(Boolean).join(' · ');
 const inspectable = (node:ExecutionNode) => {if(node.sourceKind!=='pi-subagents'||!node.id.startsWith('pi-subagent-async:'))return false;try{const path=JSON.parse(node.id.slice('pi-subagent-async:'.length));return Array.isArray(path)&&path.length>=1&&path.length<=2}catch{return false}};
 type InspectReply = { status?: string; finalOutput?: string; task?: string; truncated?: { finalOutput?: boolean } };
-function Panel({state,events,focusRootId,onInspect}:{state?:ExecutionStateSnapshot;events:ExecutionEvent[];focusRootId?:string;onInspect?: (nodeId:string)=>Promise<InspectReply>}) {
+function Panel({state,events,focusRootId,focusIssue,onInspect}:{state?:ExecutionStateSnapshot;events:ExecutionEvent[];focusRootId?:string;focusIssue?:{eventId:string};onInspect?: (nodeId:string)=>Promise<InspectReply>}) {
   const [view,setView]=useState<'tree'|'history'>('tree');
   const [open,setOpen]=useState<Set<string>>(new Set());const [collapsed,setCollapsed]=useState<Set<string>>(new Set());const [limit,setLimit]=useState(200);
   const [notice,setNotice]=useState('');
+  const logRef=useRef<HTMLDivElement>(null);
+  useEffect(()=>{if(focusIssue)setView('history')},[focusIssue]);
+  useEffect(()=>{if(view!=='history'||!focusIssue)return;const frame=requestAnimationFrame(()=>{const selected=logRef.current?.querySelector<HTMLElement>('[data-selected-issue="true"]');selected?.focus({preventScroll:true});selected?.scrollIntoView({block:'nearest'})});return()=>cancelAnimationFrame(frame)},[focusIssue,view]);
   const [inspection,setInspection]=useState<Record<string,{busy?:boolean;reply?:InspectReply;error?:string}>>({});
   const inspect=async(id:string)=>{if(!onInspect||inspection[id]?.busy)return;setInspection(old=>({...old,[id]:{busy:true}}));try{const reply=await onInspect(id);setInspection(old=>({...old,[id]:{reply}}))}catch(e){setInspection(old=>({...old,[id]:{error:(e as Error).message}}))}};
   const rows=useMemo(()=>visibleExecutionRows(state,open,collapsed),[state,open,collapsed]);
@@ -18,6 +21,8 @@ function Panel({state,events,focusRootId,onInspect}:{state?:ExecutionStateSnapsh
     return [...rows.filter(r=>belongs(r.node.id)),...rows.filter(r=>!belongs(r.node.id))];
   },[rows,state,focusRootId]);
   const shown=useMemo(()=>events.slice(-limit),[events,limit]);
+  const selectedIssue=focusIssue&&events.find(event=>event.eventId===focusIssue.eventId);
+  const eventRow=(event:ExecutionEvent,older=false)=><div key={event.eventId} className={event.eventId===focusIssue?.eventId?'selected-event':undefined} data-selected-issue={event.eventId===focusIssue?.eventId?'true':undefined} tabIndex={event.eventId===focusIssue?.eventId?-1:undefined}>{older&&<strong>Selected issue · older than recent events<br/></strong>}{new Date(event.timestamp).toLocaleTimeString()} · {event.type} · {event.sourceRef?.kind??event.source} · {event.status??''} · {String(event.payload.summary??event.payload.toolName??'')}</div>;
   const toggle=(id:string)=>setOpen(previous=>{const next=new Set(previous);next.has(id)?next.delete(id):next.add(id);return next});
   const toggleCollapsed=(id:string)=>setCollapsed(previous=>{const next=new Set(previous);next.has(id)?next.delete(id):next.add(id);return next});
   const copyContext=async(node:ExecutionNode)=>{try{await navigator.clipboard.writeText([node.label,node.status,node.blockedReason,node.details?.reason].filter(Boolean).join(' · '));setNotice('Context copied');}catch{setNotice('Copy failed')}};
@@ -39,7 +44,7 @@ function Panel({state,events,focusRootId,onInspect}:{state?:ExecutionStateSnapsh
         {(node.status==='failed'||node.status==='blocked'||node.kind==='decision')&&<button className="detail-toggle" onClick={()=>void copyContext(node)}>Copy context</button>}
         {open.has(node.id)&&<div className="node-details"><div>Source: {node.sourceKind} · relation: {node.correlation}</div>{node.dependencies?.length?<div>Depends on: {node.dependencies.join(', ')}</div>:null}{node.attempts?.length?<div>Attempts: {node.attempts.map(a=>`${a.attempt} ${a.model??''} ${a.failureClass??''}`).join(' · ')}</div>:null}{node.nativeId&&<div>Native ID: {node.nativeId}</div>}{node.details&&<pre>{JSON.stringify(node.details,null,2)}</pre>}</div>}
       </article>)}{orderedRows.length>limit&&<button onClick={()=>setLimit(limit+200)}>Show next 200 ({orderedRows.length-limit} remaining)</button>}
-    </div>:<div className="log" aria-label="Execution Event Log">{shown.map(e=><div key={e.eventId}>{new Date(e.timestamp).toLocaleTimeString()} · {e.type} · {e.sourceRef?.kind??e.source} · {e.status??''} · {String(e.payload.summary??e.payload.toolName??'')}</div>)}{events.length>limit&&<button onClick={()=>setLimit(limit+200)}>Show older events</button>}</div>}
+    </div>:<div className="log" aria-label="Execution Event Log" ref={logRef}>{focusIssue&&!selectedIssue&&<p>Selected issue is no longer in this session's event history.</p>}{selectedIssue&&!shown.some(event=>event.eventId===selectedIssue.eventId)&&eventRow(selectedIssue,true)}{shown.map(event=>eventRow(event))}{events.length>limit&&<button onClick={()=>setLimit(limit+200)}>Show older events</button>}</div>}
   </section>;
 }
 export default memo(Panel);

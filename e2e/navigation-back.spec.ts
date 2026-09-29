@@ -31,7 +31,8 @@ test('session opened from workspace activity returns to Workspaces',async({page}
     reported=[{sessionId:session.id,workspaceId:session.workspaceId,workspaceName:'Workspace',sessionName:'Running task',running:true,decisionCount:0,updatedAt:new Date().toISOString(),work:[]}];
     await page.getByRole('button',{name:'← Sessions'}).click();await page.getByRole('button',{name:'← Workspaces'}).click();
     const inbox=page.getByRole('region',{name:'Activity notifications'});
-    await expect(inbox).toContainText('Running task',{timeout:10000});
+    await expect(inbox).toContainText('1 running',{timeout:10000});
+    await inbox.locator('summary').click();
     await inbox.getByRole('button',{name:/Running task/}).click();await expect(page.getByLabel('Chat output')).toBeVisible();
     await page.reload();await expect(page.getByLabel('Chat output')).toBeVisible();
     await page.getByRole('button',{name:'← Workspaces'}).click();await expect(page.getByRole('heading',{name:'Workspaces'})).toBeVisible();

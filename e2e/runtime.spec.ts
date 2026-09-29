@@ -11,13 +11,14 @@ test('desktop/mobile execution tree observes real Pi tool and canonical history'
     await page.getByRole('button',{name:'Open Workspace'}).click();
     await page.getByRole('button',{name:'New Session'}).click();
     await expect(page.getByLabel('runtime state')).toHaveText('running',{timeout:30000});
-    await page.getByLabel('Prompt').fill('Use powershell to run Write-Output PHASE1_BROWSER_OK; Start-Sleep -Seconds 3. Then reply PHASE1_BROWSER_OK.');
-    await page.getByLabel('Prompt').press('Control+Enter');
+    await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Use powershell to run Write-Output PHASE1_BROWSER_OK; Start-Sleep -Seconds 3. Then reply PHASE1_BROWSER_OK.');
+    await page.getByRole('textbox',{name:'Prompt',exact:true}).press('Control+Enter');
     await expect(page.getByLabel('Execution Timeline')).toContainText('running',{timeout:30000});
     await page.getByRole('button',{name:'Show tool details / metadata'}).first().click();
     await expect(page.getByLabel('Execution Timeline')).toContainText('powershell',{timeout:120000});
     await expect(page.getByLabel('Execution Timeline')).toContainText('completed',{timeout:120000});
     await expect(page.locator('.message[data-role="assistant"]').last()).toContainText('PHASE1_BROWSER_OK',{timeout:120000});
+    await expect(page.locator('.message[data-role="assistant"]').last().getByRole('button',{name:'Copy all'})).toBeEnabled({timeout:120000});
     await page.locator('.message[data-role="assistant"]').last().getByRole('button',{name:'Copy all'}).click();
     expect(await page.evaluate(()=>navigator.clipboard.readText())).toContain('PHASE1_BROWSER_OK');
     await page.getByRole('button',{name:'History / Canonical Events'}).click();
@@ -26,7 +27,7 @@ test('desktop/mobile execution tree observes real Pi tool and canonical history'
     await page.setViewportSize({width:390,height:780});
     await page.getByRole('button',{name:'Chat',exact:true}).click();
     await expect(page.getByRole('button',{name:'Send',exact:true})).toBeVisible();
-    await expect(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Stop',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:/Execution ·/}).click();
     await expect(page.getByLabel('Execution Event Log')).toBeVisible();
     await page.getByRole('button',{name:'Tree / Current State'}).click();

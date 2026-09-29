@@ -20,6 +20,10 @@ Restart Pi or run `/reload`, then enter `/pi-console` in Pi. Open the displayed 
 
 For a local source checkout or standalone `npm start`, see [Operations and development](docs/operations.en.md#installation).
 
+### Optional pet artwork
+
+Fio (artwork attribution: DOLL Project / Ludi) is bundled in `package/pets/fio/` under the separate [Fio Character Asset License](package/pets/fio/FIO_ASSET_LICENSE.md), not the MIT software license, and is available without Codex or user-installed packages (8 columns × 11 rows, sprite version 2). Official Codex built-in pet artwork is not distributed with Pi Console. Pi Console supports Codex-compatible custom pet packages. Pi Console is an independent project, not affiliated with or endorsed by OpenAI. Pi Console also discovers pet packages in `~/.pi-console/pets`, `~/.codex/pets`, and legacy Pi agent locations on the server; custom packages take precedence. Settings → Pet selects a source and package or refreshes discovery; when no usable sheets exist, the companion stays hidden. Only use artwork you have the right to use.
+
 ## Find a guide
 
 | Task | Guide |

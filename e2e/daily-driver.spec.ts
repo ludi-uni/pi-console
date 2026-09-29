@@ -16,7 +16,9 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
     await page.getByLabel('Rename workspace').fill('Mobile workspace');await page.getByRole('button',{name:'Rename',exact:true}).click();
     await page.getByRole('button',{name:'Hide workspace tools'}).click();
     await page.locator('.workspace-card').filter({hasText:cwd}).click();
+    const firstSession=page.waitForResponse(r=>r.url().endsWith('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
+    const firstResponse=await firstSession;expect(firstResponse.ok(),await firstResponse.text()).toBeTruthy();
     await expect(page.getByLabel('Model',{exact:true})).toBeEnabled({timeout:15000});
     await expect(page.getByLabel('Thinking',{exact:true})).toBeEnabled();
     await page.getByRole('button',{name:'Edit saved shortcuts'}).click();await page.getByLabel('Quick prompts').fill('Check the result');await page.getByRole('button',{name:'Save prompts'}).click();
@@ -24,17 +26,20 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
     expect(await page.getByRole('button',{name:'Send',exact:true}).evaluate(el=>el.getBoundingClientRect().bottom)).toBeLessThan(720);
     await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Reply exactly MOBILE_COPY_OK.');await page.getByRole('button',{name:'Send',exact:true}).click();
     await expect(page.locator('.message[data-role="assistant"]').last()).toContainText('MOBILE_COPY_OK',{timeout:120000});
+    await expect(page.getByRole('button',{name:'Send',exact:true})).toBeVisible({timeout:30000});
     await expect(page.getByLabel('Context usage',{exact:true})).toContainText(/Context\s+\d+%/,{timeout:15000});
     await expect(page.getByLabel('runtime state')).not.toBeVisible();
     await page.locator('.message[data-role="assistant"]').last().getByRole('button',{name:'Copy all'}).click();expect(await page.evaluate(()=>navigator.clipboard.readText())).toContain('MOBILE_COPY_OK');
     await page.getByRole('button',{name:'← Sessions'}).click();await expect(page.getByLabel('Search sessions')).toBeVisible();
     await page.getByLabel('Search sessions').fill('MOBILE_COPY_OK');
-    await expect(page.getByLabel('Session list').getByRole('button')).toHaveCount(1,{timeout:15000});
+    await expect(page.getByLabel('Session list').locator('.session-row')).toHaveCount(1,{timeout:15000});
     await page.getByLabel('Search sessions').fill('');
+    const created=page.waitForResponse(r=>r.url().endsWith('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
+    expect((await created).ok()).toBeTruthy();
     await expect(page.getByLabel('Chat output')).not.toContainText('MOBILE_COPY_OK');
     await page.getByRole('button',{name:'← Sessions'}).click();
-    await page.getByLabel('Session list').getByRole('button',{name:/MOBILE_COPY_OK/}).click();
+    await page.getByLabel('Session list').locator('.session-row > button:first-child').filter({hasText:'MOBILE_COPY_OK'}).click();
     await expect(page.locator('.message[data-role="assistant"]').last()).toContainText('MOBILE_COPY_OK');
     await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Use powershell to run Start-Sleep -Seconds 8 and then reply done.');
     await page.getByRole('button',{name:'Send',exact:true}).click();
@@ -51,7 +56,7 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
 });
 
 test('PWA: manifest, icons, service worker, offline shell and reconnect UI',async({page,context})=>{
-  await page.goto('/');await page.evaluate(()=>navigator.serviceWorker.ready);await expect.poll(async()=>page.evaluate(async()=>{const c=await caches.open('pi-console-shell-v2');return (await c.keys()).some(req=>req.url.includes('/assets/'))})).toBe(true);
+  await page.goto('/');await page.evaluate(()=>navigator.serviceWorker.ready);await expect.poll(async()=>page.evaluate(async()=>{const c=await caches.open('pi-console-shell-v3');return (await c.keys()).some(req=>req.url.includes('/assets/'))})).toBe(true);
   const manifest=await (await page.request.get('/manifest.webmanifest')).json();
   expect(manifest.display).toBe('standalone');expect(manifest.icons.some((i:any)=>i.sizes==='192x192')).toBe(true);expect(manifest.icons.some((i:any)=>i.sizes==='512x512')).toBe(true);
   const cdp=await context.newCDPSession(page);await cdp.send('Page.enable');const check=await cdp.send('Page.getInstallabilityErrors');
@@ -68,13 +73,13 @@ test('long session: 350 messages, 1200 events, code copy and bounded history',as
     await page.goto('/');const ws=(await (await page.request.post('/api/workspaces',{data:{path:cwd}})).json()).workspace;
     const sid=(await (await page.request.post('/api/sessions',{data:{workspaceId:ws.id}})).json()).session.id;
     await page.route('**/api/resume',async route=>{const response=await route.fetch();const body=await response.json();
-      body.snapshot.chat=Array.from({length:350},(_,i)=>({id:`m${i}`,role:'assistant',text:i===349?'Result: ```ts\nconst answer = 42;\n```':`message ${i}`,complete:true}));
+      body.snapshot.chat=Array.from({length:350},(_,i)=>({id:`m${i}`,role:'assistant',text:i===349?'Result:\n\n```ts\nconst answer = 42;\n```':`message ${i}`,complete:true}));
       body.snapshot.events=Array.from({length:1200},(_,i)=>({eventId:`e${i}`,seq:i+1,timestamp:new Date().toISOString(),type:'RunCompleted',runId:'long',entityId:'long',source:'pi',payload:{summary:`event ${i}`}}));
       body.snapshot.seq=1200;await route.fulfill({response,body:JSON.stringify(body)});
     });
     await page.reload();await page.getByLabel('Workspace',{exact:true}).selectOption(ws.id);await page.getByLabel('Session',{exact:true}).selectOption(sid);
     await expect(page.getByLabel('Chat output').locator('article')).toHaveCount(350,{timeout:15000});
-    await page.getByRole('button',{name:'Copy code'}).click();expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe('const answer = 42;');
+    await page.getByRole('button',{name:'Copy code'}).click();await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toBe('const answer = 42;');
     await page.getByRole('button',{name:'History / Canonical Events'}).click();
     await expect(page.getByLabel('Execution Event Log').locator('div')).toHaveCount(200);
     const c=await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:sid}});expect(c.ok()).toBe(true);

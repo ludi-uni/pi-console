@@ -46,14 +46,17 @@ test('mobile drill-down keeps workspace and session context while switching view
     await page.setViewportSize({width:390,height:780});
     await expect(page.getByRole('heading',{name:'Workspaces'})).toBeVisible();
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-navigation-workspaces.png')});
-    await expect(page.getByRole('button',{name:'＋ Add'})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'＋ Add a workspace',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'＋ Add a workspace',exact:true}).click();
     await expect(page.getByRole('heading',{name:'Add a workspace'})).toBeInViewport();
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-navigation-add-workspace.png')});
     await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.locator('main')).toHaveClass(/view-sessions/);
     await expect(page.getByRole('button',{name:'← Workspaces'})).toBeVisible();
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-navigation-sessions.png')});
+    const created=page.waitForResponse(response=>response.url().includes('/api/sessions')&&response.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
+    const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
     await expect(page.locator('main')).toHaveClass(/view-chat/);
     await expect(page.getByRole('button',{name:'← Sessions'})).toBeVisible();
     await expect(page.getByLabel('Model',{exact:true})).toBeEnabled({timeout:15000});
@@ -104,15 +107,20 @@ test('mobile drill-down keeps workspace and session context while switching view
     await expect(page.getByRole('button',{name:/Execution ·/})).toHaveAttribute('aria-current','page');
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.waitForTimeout(230);
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-navigation-execution.png')});
+    await page.getByRole('button',{name:'← Chat'}).click();
     await page.getByRole('button',{name:'← Sessions'}).click();
-    await expect(page.getByLabel('Session list').getByRole('button')).toHaveCount(1);
+    await expect(page.locator('.session-list .session-row')).toHaveCount(1);
     await page.getByRole('button',{name:'← Workspaces'}).click();
     await page.locator('.workspace-card').filter({hasText:root}).click();
-    await page.getByLabel('Session list').getByRole('button').click();
+    await page.locator('.session-list .session-row>button:first-child').click();
     await expect(page.locator('main')).toHaveClass(/view-chat/);
     const ws=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:any)=>w.path===root);
     for(const s of (await(await page.request.get(`/api/sessions?workspaceId=${ws.id}`)).json()).sessions)await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:s.id}});
-  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{})}
+  }finally{
+    try{const ws=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===root);
+      if(ws)await page.request.post('/api/workspaces/remove',{data:{id:ws.id}})}catch{/* Preserve the original test failure. */}
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{});
+  }
 });
 
 test('folder browser creates a local subfolder and rejects invalid or duplicate names',async({page})=>{

@@ -42,7 +42,9 @@ test('assistant Markdown links open safe workspace text and code at referenced l
       const response=await route.fetch(),body=await response.json();body.chat=[message];body.seq=1000000;
       await route.fulfill({response,body:JSON.stringify(body)});
     });
+    const created=page.waitForResponse(r=>r.url().endsWith('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
+    const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
     const answer=page.locator('[data-message-id="markdown-answer"]');
     await expect(answer.getByRole('heading',{name:'Result'})).toBeVisible();
     await expect(answer.locator('.markdown-content strong')).toHaveText('Finished');

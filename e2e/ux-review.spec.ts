@@ -19,7 +19,9 @@ test('language, prompt suggestions and filtered model picker', async ({page}) =>
       ],thinkingLevel:'medium',thinkingLevels:['medium'],contextUsage:null
     }}));
     await page.route('**/api/session/model', route => void route.fulfill({json:{model:models[1],models,thinkingLevel:'medium',thinkingLevels:['medium'],contextUsage:null}}));
+    const created=page.waitForResponse(r=>r.url().endsWith('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button', {name:'New Session'}).click();
+    const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
     await expect(page.getByText('Suggested prompts')).toBeVisible();
     await expect(page.getByRole('button', {name:'Continue implementing'})).toBeVisible();
     await expect(page.getByLabel('Model', {exact:true})).toBeEnabled();

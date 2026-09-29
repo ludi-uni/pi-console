@@ -18,8 +18,15 @@ test('observed active sessions appear across workspaces and open exact session',
       {sessionId:s2.id,workspaceId:w2.id,workspaceName:w2.name,sessionName:'Working task',running:true,decisionCount:0,work:[],updatedAt:new Date().toISOString()}];
     await page.reload();
     const inbox=page.getByRole('region',{name:'Activity notifications'});
-    await expect(inbox).toContainText('Review needed');await expect(inbox).toContainText('1 need input');await expect(inbox).toContainText('Working task');
-    await expect(page.getByRole('button',{name:'Active session alerts'})).toBeVisible();
+    await expect(inbox).toContainText('1 need input');
+    await expect(inbox.getByRole('button',{name:/Review needed/})).not.toBeVisible();
+    await inbox.locator('summary').click();
+    await expect(inbox.getByRole('button',{name:/Review needed/})).toBeVisible();
+    await expect(inbox).toContainText('Working task');
+    await inbox.locator('summary').click();
+    await expect(inbox.getByRole('button',{name:/Review needed/})).not.toBeVisible();
+    await page.getByRole('button',{name:'Active session alerts'}).click();
+    await expect(inbox.getByRole('button',{name:/Review needed/})).toBeVisible();
     await page.screenshot({path:join(tmpdir(),'pi-console-active-sessions-mobile.png'),fullPage:true});
     await inbox.getByRole('button',{name:/Review needed/}).click();
     await expect(page.locator('.app-shell')).toHaveClass(/view-chat/);

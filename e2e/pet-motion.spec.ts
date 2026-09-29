@@ -23,6 +23,8 @@ test('pet roams, touch-drags, stays within viewport and restores its position',a
   await page.getByLabel('Show companion').check();
   const widget=page.locator('.pet-widget');await expect(widget).toBeVisible();
   await expect.poll(()=>widget.evaluate(el=>{const c=el.querySelector('canvas')!;const p=c.getContext('2d')!.getImageData(0,0,c.width,c.height).data;for(let i=3;i<p.length;i+=4)if(p[i])return true;return false})).toBe(true);
+  await expect.poll(()=>widget.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.left+2,r.top+2)?.closest('.pet-widget')===null})).toBe(true);
+  await expect.poll(()=>widget.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('.pet-widget')===el})).toBe(true);
   expect(await waitForMotion(page,'walk')).toBe(true);
   const first=await widget.boundingBox();expect(first).not.toBeNull();
   await expect.poll(async()=>{const box=await widget.boundingBox();return Math.abs(box!.x-first!.x)+Math.abs(box!.y-first!.y)},{timeout:10000}).toBeGreaterThan(5);

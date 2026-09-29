@@ -20,7 +20,15 @@ test('report-only retry in Execution does not restart the kit',async({page})=>{
     await page.getByRole('button',{name:'New Session'}).click();
     await page.getByRole('button',{name:/Execution ·/}).click();
     const card=page.getByRole('status',{name:'Orchestrator run status'});
-    await expect(card).toContainText('Report not saved');
+    await expect(card.locator('summary').first()).toContainText('Report not saved · Open to resolve');
+    await expect(card.locator('.kit-run-body')).not.toBeVisible();
+    await page.screenshot({path:join(tmpdir(),'pi-console-report-collapsed-mobile.png')});
+    await page.getByRole('button',{name:'Chat',exact:true}).click();
+    const report=page.locator('.kit-chat-report');
+    await expect(report.locator('.kit-chat-final')).toBeVisible();
+    await expect(report.locator('.kit-chat-final')).toContainText('The run is done');
+    await page.getByRole('button',{name:/Execution ·/}).click();
+    await card.locator('summary').first().click();
     await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
     if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-report-retry-mobile.png')});
     await card.getByRole('button',{name:'Retry saving report to Pi'}).click();
@@ -31,7 +39,8 @@ test('report-only retry in Execution does not restart the kit',async({page})=>{
     page.once('dialog',dialog=>{expect(dialog.message()).toContain('does not save the report');void dialog.accept()});
     await card.getByRole('button',{name:'Mark report handled after inspection'}).click();
     await expect(card).toContainText('Handled manually');
-    await expect(page.getByLabel('Orchestrator request')).toBeVisible();
+    await expect(page.getByText('New orchestrator run',{exact:true})).toBeVisible();
+    await expect(page.getByLabel('Orchestrator request')).not.toBeVisible();
     expect(handled).toBe(1);expect(piPrompts).toBe(0);
     const ws=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===root);
     for(const s of (await(await page.request.get(`/api/sessions?workspaceId=${ws.id}`)).json()).sessions)await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:s.id}});

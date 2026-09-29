@@ -1,9 +1,11 @@
 import type { SessionInfo, Workspace, ExecutionEvent, ExecutionStateSnapshot } from '../shared/types.ts';
-/** The banner is transient; older failures remain available in Execution history. */
-export function recentIssue(events: ExecutionEvent[], dismissed: readonly string[], now = Date.now()): ExecutionEvent | undefined {
+/** Only a fresh issue appears as a transient toast; history remains in Execution. */
+export const issueToastDurationMs=7000;
+export function recentIssue(events: ExecutionEvent[], dismissed: readonly string[], now = Date.now(), retained?:{eventId:string;until:number}): ExecutionEvent | undefined {
   let issue: ExecutionEvent | undefined;
   for (let i = events.length - 1; i >= 0; i--) if (['RunFailed','ToolFailed','ErrorEvent'].includes(events[i].type)) { issue = events[i]; break; }
-  if (!issue || dismissed.includes(issue.eventId) || !Number.isFinite(Date.parse(issue.timestamp)) || now - Date.parse(issue.timestamp) >= 10 * 60_000) return;
+  if (!issue || dismissed.includes(issue.eventId) || !Number.isFinite(Date.parse(issue.timestamp))) return;
+  if (now-Date.parse(issue.timestamp)>=issueToastDurationMs && !(retained?.eventId===issue.eventId && now<retained.until)) return;
   if (events.some(e => e.seq > issue.seq && e.type === 'RunCompleted')) return;
   return issue;
 }
