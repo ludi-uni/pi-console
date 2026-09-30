@@ -46,7 +46,7 @@ CLI を検出できない場合は、`PI_CONSOLE_PI_COMMAND` に Pi の `dist/bu
 
 Kit の実行履歴は既存の Orchestrator SQLite にあり、Pi のチャット履歴は Pi が管理します。Console の正規化したイベント履歴やフォアグラウンドの子エージェント進捗はメモリー内です。ludi-agent-kit の npm Pi パッケージは自動検出されます。必要な場合は `PI_CONSOLE_KIT_ROOT` で場所を、`PI_CONSOLE_ORCHESTRATOR_STORE` で標準以外の kit DB を指定できます。Pi Console の状態アダプターはこれらを読み取るだけです。Kit への指示を明示的に選択すると、正確な Pi セッション紐付けで kit API を呼び、kit が自身の履歴を書き込みます。紐付けを検証できない実行はそのセッションの Orchestrator 実行として表示しません。Kit がなければこの送信先は無効です。
 
-**Orchestrator settings** では Pi セッションがあれば利用可能モデルから選択でき、手入力も可能です。kit が定義済みの backend 枠にモデルを追加・変更・解除し、capability の追加・経路編集・削除／無効化／復元と代替モデルの並べ替えができます。新規 backend 枠の追加・削除は、この kit のローカル上書き形式では対応していません。モデル割り当ては Pi agent ディレクトリーの `ludi-agent-kit/models.local.json` に保存されます。capability 経路はインストール済み kit 内の `routing/routing.local.json` に保存されるため、**kit の更新前に別途バックアップが必要**です。[kit 設定の退避・復元手順](upgrade-storage.ja.md#ludi-agent-kit-の更新)で、既存設定を上書きしないプレビュー付きツールを使えます。変更は次の実行から反映され、Pi セッションモデル・認証情報・共有の既定値は変更しません。新規 capability は agent に自動割り当てされず、標準 capability の無効化で必要な agent が使えなくなる場合があります。
+**Orchestrator settings** では最大16件の自由名モデルと使用許可を管理します。Pi セッションがあれば利用可能モデルから選択でき、手入力も可能です。登録モデルと画面で編集するその経路は Console のデータディレクトリーの `orchestrator-models.json` に保存します。Console の開始・再開時にメモリー上で Kit に合成するため、インストール済み Kit の backend 定義は変更しません。Kit の CLI には適用しません。既存の固定割り当ては Pi agent ディレクトリーの `ludi-agent-kit/models.local.json` を維持します。従来の capability 経路と標準 capability の無効化設定は Kit 内の `routing/routing.local.json` を使用するため、**kit の更新前に別途バックアップが必要**です。[kit 設定の退避・復元手順](upgrade-storage.ja.md#ludi-agent-kit-の更新)で、既存設定を上書きしないプレビュー付きツールを使えます。登録モデルの許可・経路は次の開始・再開時に反映します（実行中のランには反映しません）。Pi セッションモデル・認証情報・共有の既定値は変更しません。新規 capability は agent に自動割り当てされず、標準 capability の無効化で必要な agent が使えなくなる場合があります。
 
 ## テスト
 

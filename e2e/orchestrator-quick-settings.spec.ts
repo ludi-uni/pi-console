@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('first-model setup works without opening advanced settings', async ({ page }) => {
+test('legacy model setup remains available without opening storage details', async ({ page }) => {
   const config = {
     modelSource: 'defaults', modelSavePath: 'user override',
     capabilities: { 'strong-code': { description: 'Code tasks', primary: 'first', fallback: [], status: 'placeholder', candidates: [], placeholder: ['first'], unbound: [] } },
@@ -19,13 +19,14 @@ test('first-model setup works without opening advanced settings', async ({ page 
   });
   await page.goto('/?view=settings');
   await page.getByRole('button', { name: 'Orchestrator' }).click();
+  await page.getByText('Legacy kit assignments',{exact:true}).click();
   await expect(page.getByText('No model is assigned yet. Add one to get started.')).toBeVisible();
-  await page.getByRole('button',{name:'Add model'}).click();
+  await page.getByRole('button',{name:'Assign legacy model'}).click();
   await page.getByLabel('Kit model provider').fill('openai-codex');
   await page.getByLabel('Kit model ID').fill('test-model');
   await page.getByRole('button', { name: 'Save model' }).click();
   expect(saved).toEqual({ kind: 'backend', name: 'first', provider: 'openai-codex', model: 'test-model' });
-  await expect(page.getByRole('region',{name:'Orchestrator models'})).toContainText('openai-codex / test-model');
+  await expect(page.getByRole('region',{name:'Orchestrator models',exact:true})).toContainText('openai-codex / test-model');
   await expect(page.getByRole('region',{name:'Orchestrator capabilities'})).toContainText('strong-code');
 });
 
@@ -51,7 +52,8 @@ test('Pi session catalog fills provider and ID without changing the session mode
   });
   await page.goto('/?view=settings');
   await page.getByRole('button', { name: 'Orchestrator' }).click();
-  await page.getByRole('button',{name:'Add model'}).click();
+  await page.getByText('Legacy kit assignments',{exact:true}).click();
+  await page.getByRole('button',{name:'Assign legacy model'}).click();
   await page.getByLabel('Kit available Pi model search').fill('shared');
   await page.getByLabel('Kit available Pi model provider').selectOption('p2');
   await expect(page.getByLabel('Kit available Pi model',{exact:true}).locator('option')).toHaveCount(2);
@@ -89,7 +91,7 @@ test('quick setup prioritizes a configured model while preserving fallbacks; adv
   await page.setViewportSize({ width: 390, height: 780 });
   await page.goto('/?view=settings');
   await page.getByRole('button', { name: 'Orchestrator' }).click();
-  await expect(page.getByRole('region',{name:'Orchestrator models'})).toContainText('provider / model-first');
+  await expect(page.getByRole('region',{name:'Orchestrator capabilities'})).toContainText('provider / model-first');
   await expect(page.getByRole('region',{name:'Orchestrator capabilities'})).toContainText('strong-code');
   if(process.env.PI_CONSOLE_SCREENSHOT)await page.screenshot({path:join(tmpdir(),'pi-console-ux-access-status.png')});
   await expect(page.getByLabel('first provider')).not.toBeVisible();
@@ -97,7 +99,7 @@ test('quick setup prioritizes a configured model while preserving fallbacks; adv
   const quick = page.locator('.orchestrator-quick-route').filter({ has: page.getByLabel('strong-code preferred model') });
   await expect(quick).toContainText('third → first → second');
   await quick.getByRole('button', { name: 'Use this model' }).click();
-  await expect(page.getByText('Saved. New runs use these settings.')).toBeVisible();
+  await expect(page.getByText('Saved. New and resumed runs use these settings.')).toBeVisible();
   expect(saved).toEqual({ kind: 'capability', name: 'strong-code', primary: 'third', fallback: ['first', 'second'] });
   await page.getByRole('button',{name:'Edit capability strong-code'}).click();
   await expect(page.getByLabel('Capability primary model')).toBeVisible();

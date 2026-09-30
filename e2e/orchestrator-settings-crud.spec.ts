@@ -29,11 +29,12 @@ test('mobile kit model assignments and capability routes can be added, reordered
   });
   await page.setViewportSize({width:390,height:780});await page.goto('/?view=settings');
   await page.getByRole('button',{name:'Orchestrator'}).click();
-  await page.getByRole('button',{name:'Add model'}).click();
+  await page.getByText('Legacy kit assignments',{exact:true}).click();
+  await page.getByRole('button',{name:'Assign legacy model'}).click();
   await expect(page.getByLabel('Model backend slot')).toHaveValue('third');
   await page.getByLabel('Kit model provider').fill('openai-codex');await page.getByLabel('Kit model ID').fill('new-model');
   await page.getByRole('button',{name:'Save model'}).click();
-  await expect(page.getByRole('region',{name:'Orchestrator models'})).toContainText('openai-codex / new-model');
+  await expect(page.getByRole('region',{name:'Orchestrator models',exact:true})).toContainText('openai-codex / new-model');
   if(process.env.PI_CONSOLE_SCREENSHOT){await page.locator('.settings-content').evaluate(node=>node.scrollTop=0);await page.screenshot({path:join(tmpdir(),'pi-console-kit-models-mobile.png')})}
   await page.getByRole('button',{name:'Add capability'}).click();
   await page.getByLabel('New capability name').fill('custom-check');
@@ -59,6 +60,6 @@ test('mobile kit model assignments and capability routes can be added, reordered
   await page.getByRole('button',{name:'Restore capability strong-code'}).click();
   await expect(page.getByRole('button',{name:'Edit capability strong-code'})).toBeVisible();
   page.once('dialog',dialog=>void dialog.accept());await page.getByRole('button',{name:'Remove model third'}).click();
-  await expect(page.getByRole('region',{name:'Orchestrator models'})).not.toContainText('openai-codex / new-model');
+  await expect(page.getByRole('region',{name:'Orchestrator models',exact:true})).not.toContainText('openai-codex / new-model');
   expect(requests.at(-1)).toMatchObject({kind:'backend',action:'delete',name:'third',confirmed:true});
 });

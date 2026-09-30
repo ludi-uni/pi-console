@@ -9,10 +9,11 @@ test('orchestrator settings show runtime binding status/source and verify persis
   const root = await mkdtemp(join(tmpdir(), 'pi-console-settings-'));
   const agentDir = join(root, 'agent');
   const userFile = join(agentDir, 'ludi-agent-kit', 'models.local.json');
-  const previousRoot = process.env.PI_CONSOLE_KIT_ROOT, previousAgent = process.env.PI_CODING_AGENT_DIR;
+  const previousRoot = process.env.PI_CONSOLE_KIT_ROOT, previousAgent = process.env.PI_CODING_AGENT_DIR, previousData = process.env.PI_CONSOLE_DATA_DIR;
   try {
     process.env.PI_CONSOLE_KIT_ROOT = root;
     process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_CONSOLE_DATA_DIR = join(root,'console');
     for (const dir of ['routing', 'lib/orchestrator', 'adapters/pi/lib']) await mkdir(join(root, dir), { recursive: true });
     const files: Record<string, string> = {
       'lib/orchestrator/api.mjs': '',
@@ -83,6 +84,45 @@ export const loadRegistry=(basePath,packagePath,routing,userPath)=>{const local=
     assert.equal(JSON.parse(await readFile(userFile,'utf8')).backends.first.model,'TODO-unconfigured');
     settings=await updateOrchestratorSettings({kind:'backend',name:'first',provider:'openai',model:'gpt-test',revision:settings.revision});
     assert.equal(settings.backends.first.status,'bound');
+    // Freely named registrations use Console storage, not the replaceable kit files.
+    const modelDraft={name:'日本語のモデル / ⭐',provider:'openai',model:'named-model',vision:false,scopes:['code']};
+    const kitBefore=await readFile(join(root,'routing/routing.local.json'),'utf8');
+    settings=await updateOrchestratorSettings({kind:'usermodel',action:'create',...modelDraft,revision:settings.revision});
+    const registered=settings.userModels[0], backend=registered.backend;
+    assert.equal(registered.name,modelDraft.name);
+    assert.equal(settings.maxUserModels,16);
+    assert.equal(settings.overlayPath,join(root,'console','orchestrator-models.json'));
+    await assert.rejects(updateOrchestratorSettings({kind:'backend',name:backend,provider:'x',model:'y'}),/unknown backend/);
+    settings=await updateOrchestratorSettings({kind:'capability',name:'strong-code',primary:backend,fallback:['second'],revision:settings.revision});
+    assert.deepEqual(settings.capabilities['strong-code'].candidates,[backend,'second']);
+    settings=await updateOrchestratorSettings({kind:'usermodel',action:'update',id:registered.id,...modelDraft,name:'自由に改名',revision:settings.revision});
+    assert.equal(settings.userModels[0].id,registered.id);
+    assert.equal(settings.capabilities['strong-code'].primary,backend);
+    assert.deepEqual(settings.capabilities['strong-code'].candidates,[backend,'second']);
+    const beforeConcurrent=settings.revision;
+    const concurrent=await Promise.allSettled(['A','B'].map(suffix=>updateOrchestratorSettings({kind:'usermodel',action:'create',...modelDraft,name:`別モデル${suffix}`,revision:beforeConcurrent})));
+    assert.equal(concurrent.filter(r=>r.status==='fulfilled').length,1);
+    assert.match(String((concurrent.find(r=>r.status==='rejected') as PromiseRejectedResult).reason),/settings changed elsewhere/);
+    settings=await orchestratorSettings();
+    settings=await updateOrchestratorSettings({kind:'capability',action:'create',name:'named-review',scope:'review',primary:backend,fallback:[],revision:settings.revision});
+    assert.deepEqual(settings.capabilities['named-review'].candidates,[]); // code permission is not review permission
+    settings=await updateOrchestratorSettings({kind:'usermodel',action:'update',id:registered.id,...modelDraft,name:'自由に改名',scopes:[],revision:settings.revision});
+    assert.deepEqual(settings.capabilities['strong-code'].candidates,['second']);
+    assert.equal(settings.capabilities['strong-code'].primary,backend); // preserve desired route while denied
+    settings=await updateOrchestratorSettings({kind:'capability',name:'strong-code',primary:'first',fallback:['second'],revision:settings.revision});
+    assert.deepEqual(settings.capabilities['strong-code'].candidates,['first','second']); // replacing an overlay route works
+    settings=await updateOrchestratorSettings({kind:'usermodel',action:'update',id:registered.id,...modelDraft,name:'自由に改名',scopes:['review'],revision:settings.revision});
+    assert.deepEqual(settings.capabilities['named-review'].candidates,[backend]); // editing a model preserves custom routes
+    assert.equal(await readFile(join(root,'routing/routing.local.json'),'utf8'),kitBefore);
+    settings=await updateOrchestratorSettings({kind:'usermodel',action:'delete',id:registered.id,confirmed:true,revision:settings.revision});
+    assert.equal(settings.capabilities['named-review'],undefined);
+    assert.equal(settings.backends[backend],undefined);
+    for(let i=settings.userModels.length;i<16;i++)settings=await updateOrchestratorSettings({kind:'usermodel',action:'create',...modelDraft,name:`モデル ${i}`,revision:settings.revision});
+    assert.equal((await orchestratorSettings()).userModels.length,16);
+    await assert.rejects(updateOrchestratorSettings({kind:'usermodel',action:'create',...modelDraft,name:'17件目',revision:settings.revision}),/model limit reached/);
+    const savedModels=JSON.parse(await readFile(settings.overlayPath,'utf8'));
+    assert.equal(Object.keys(savedModels.models).length,16);
+    assert.equal(savedModels.capabilities['strong-code'].primary,'first');
     // A kit still using the old package-only loader must not receive a false success response.
     process.env.PI_CONSOLE_TEST_OLD_LOADER = '1';
     await assert.rejects(updateOrchestratorSettings({ kind: 'backend', name: 'first', provider: 'openai', model: 'newer' }), /runtime loader did not confirm/);
@@ -90,6 +130,7 @@ export const loadRegistry=(basePath,packagePath,routing,userPath)=>{const local=
     delete process.env.PI_CONSOLE_TEST_OLD_LOADER;
     if (previousRoot === undefined) delete process.env.PI_CONSOLE_KIT_ROOT; else process.env.PI_CONSOLE_KIT_ROOT = previousRoot;
     if (previousAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgent;
+    if(previousData===undefined)delete process.env.PI_CONSOLE_DATA_DIR;else process.env.PI_CONSOLE_DATA_DIR=previousData;
     await rm(root, { recursive: true, force: true });
   }
 });

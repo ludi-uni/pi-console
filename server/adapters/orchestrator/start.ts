@@ -2,12 +2,28 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { kitRoot } from './source.ts';
+import { loadOverlay, applyOverlay, routingForRole } from './overlay.ts';
 
 const load = (root: string, file: string) => import(pathToFileURL(join(root,file)).href);
+// The kit's loadOrchestrationContext reads only kit-owned routing/registry files. Console-registered
+// user models are merged into the in-memory context afterwards; the installed kit is never modified.
+async function applyModelOverlay(ctx: any): Promise<void> {
+  const { overlay } = await loadOverlay();
+  const merged = applyOverlay(ctx.routing, ctx.registry, overlay);
+  ctx.routing = merged.routing;
+  ctx.registry = merged.registry;
+}
+function createConsoleRunner(api:any, ctx:any, options:any) {
+  const runner = api.createRunRunner(ctx,options);
+  return {...runner,run(task:any, taskContext:any) {
+    const routing = routingForRole(ctx.routing,ctx.registry,task.assignedAgent);
+    return (routing===ctx.routing?runner:api.createRunRunner({...ctx,routing},options)).run(task,taskContext);
+  }};
+}
 async function withContext<T>(root: string, sessionId: string, use: (api: any, ctx: any) => Promise<T> | T): Promise<T> {
   const api=await load(root,'lib/orchestrator/api.mjs');
   const ctx=api.loadOrchestrationContext({kit:root,storePath:process.env.PI_CONSOLE_ORCHESTRATOR_STORE??api.defaultStorePath(root),clientContext:{kind:'pi-web',sessionId}});
-  try {if(ctx.errors.length)throw new Error(ctx.errors.join('\n'));return await use(api,ctx)}
+  try {await applyModelOverlay(ctx);if(ctx.errors.length)throw new Error(ctx.errors.join('\n'));return await use(api,ctx)}
   finally {ctx.session.close()}
 }
 
@@ -24,7 +40,7 @@ export async function resumeKitRun(root: string, sessionId: string, workspacePat
   return withContext(root,sessionId,async(api,ctx)=>{
     const [pi,subagent]=await Promise.all([load(root,'adapters/pi/lib/invoke.mjs'),load(root,'adapters/pi/lib/subagent.mjs')]);
     const health=api.createRunHealth(ctx),invoke=pi.createPiInvoker();
-    const runner=api.createRunRunner(ctx,{invoke,runSubagent:subagent.createPiSubagentRunner(),repoRoot:workspacePath,apply:false,health,runId});
+    const runner=createConsoleRunner(api,ctx,{invoke,runSubagent:subagent.createPiSubagentRunner(),repoRoot:workspacePath,apply:false,health,runId});
     const result=await api.resumeOrchestration(ctx,{runId,repoRoot:workspacePath,runner,invoke,health,onProgress});
     return {completed:result.status==='completed',needsInput:result.status==='needs-user',report:typeof api.formatReport==='function'?api.formatReport(result):undefined};
   });
@@ -49,10 +65,11 @@ export async function startKitRun(root: string, sessionId: string, workspacePath
     clientContext: { kind: 'pi-web', sessionId },
   });
   try {
+    await applyModelOverlay(ctx);
     if (ctx.errors.length) throw new Error(ctx.errors.join('\n'));
     const health = api.createRunHealth(ctx);
     const invoke = pi.createPiInvoker();
-    const runner = api.createRunRunner(ctx, { invoke, runSubagent: subagent.createPiSubagentRunner(), repoRoot: workspacePath, apply: false, health });
+    const runner = createConsoleRunner(api,ctx, { invoke, runSubagent: subagent.createPiSubagentRunner(), repoRoot: workspacePath, apply: false, health });
     const result = await api.startOrchestration(ctx, { request, repoRoot: workspacePath, runner, invoke, health, onProgress });
     onNeedsInput?.(result.status==='needs-user');
     if (result.status!=='needs-user' && onReport && typeof api.formatReport === 'function') {
