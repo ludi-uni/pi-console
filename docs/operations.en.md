@@ -24,7 +24,34 @@ npm start  # loads optional repo-root .env (Node 24)
 # in local mode, open http://127.0.0.1:31717
 ```
 
-If Pi CLI discovery fails, set `PI_CONSOLE_PI_COMMAND` to the absolute path of Pi's `dist/bundle/cli.js` (not `pi.cmd`). Package startup does not read an arbitrary workspace's `.env`; pass remote-mode variables in the host Pi environment.
+If Pi CLI discovery fails, set `PI_CONSOLE_PI_COMMAND` to the absolute path of Pi's `dist/bundle/cli.js` (not `pi.cmd`). Package startup never reads an arbitrary workspace's `.env`; it explicitly reads the stable Console file described below.
+
+### `.env` for Pi and Windows Startup
+
+Both `/pi-console` and Windows Startup read `~/.pi/agent/pi-console/.env` by default (`%USERPROFILE%\.pi\agent\pi-console\.env` on Windows). It lives outside the replaceable npm package and survives Console upgrades. To edit the default location:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.pi\agent\pi-console" | Out-Null
+notepad "$env:USERPROFILE\.pi\agent\pi-console\.env"
+```
+
+Example remote configuration (replace every value with your actual configuration):
+
+```dotenv
+PI_CONSOLE_PUBLIC_ORIGIN=https://console.example.com
+PI_CONSOLE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+PI_CONSOLE_ACCESS_AUD=your-application-audience-tag
+# Optional; match the Tunnel's origin port.
+PORT=31717
+```
+
+- An incoming `PI_CONSOLE_DATA_DIR` selects `<that directory>/.env`. Otherwise an incoming `PI_CODING_AGENT_DIR` selects `<agent directory>/pi-console/.env`. **Set these location selectors in the environment that starts Pi/Windows Startup, not inside the file.** Loading a file does not recursively discover another one.
+- Explicit process environment values override file values, including empty strings. An explicit `/pi-console 31718` also overrides the file's `PORT`. If edits seem ignored, check for stale variables in the launching process.
+- A missing file keeps environment-only startup. Read errors fail startup; partially configured Cloudflare variables also refuse startup. Do not disable authentication to work around configuration errors.
+- Restart Console and reload the browser after editing. For a Pi-owned server use `/pi-console stop`, then `/pi-console`. A server owned by Windows Startup or another process must be stopped separately. Restart Pi itself if changing its inherited environment.
+- Only trusted operators should edit this file. Do not store it inside a workspace/npm package or commit real values to a public repository. Use `C:/...` for Windows paths: Node's double-quoted `.env` syntax interprets `\n` as a newline.
+
+Standalone `npm start` / `npm run dev` still load the repository-root `.env`; the stable file above is for Pi-package and Windows Startup launches. See the [Cloudflare guide](cloudflare-access.md) for Tunnel Host and authentication settings.
 
 ## Security and startup
 

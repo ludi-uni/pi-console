@@ -1,7 +1,9 @@
 // Launched by the current user's Windows Startup shortcut, never by the Pi RPC worker.
-// Node is started with --env-file-if-exists=.env --import tsx and cwd=package root.
+// The stable Console .env is loaded explicitly, independent of the package/workspace cwd.
 import { connect } from 'node:net';
 import { consoleDataDir } from './data-directory.mjs';
+import { loadConsoleEnvironment } from './environment.mjs';
+Object.assign(process.env, await loadConsoleEnvironment());
 const port = Number(process.env.PORT ?? 31717);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid pi-console startup PORT');
 const occupied = await new Promise(resolve => {

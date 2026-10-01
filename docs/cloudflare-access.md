@@ -6,7 +6,16 @@ This is an **operator-configured remote mode**, not an automatically published s
 
 1. In Cloudflare Zero Trust, create a Self-hosted Access application covering `console.example.com` with an explicit Allow policy limited to your identity. Copy its **Application Audience (AUD) Tag** under Applications → Configure → Additional settings. Find your team domain (`https://<team>.cloudflareaccess.com`). Do not confuse it with the console public hostname.
 2. Add a public hostname to the **existing Tunnel**: `console.example.com` → `http://127.0.0.1:31717`. Keep `cloudflared` on the same machine, leave the origin Host header as the **public hostname** (no `httpHostHeader` rewrite), and do not strip `Cf-Access-Jwt-Assertion`. Cloudflare's **Protect with Access** Tunnel option is recommended as an additional verification layer. Do not point the tunnel at pi-web's port `31415`.
-3. In the terminal that starts pi-console, configure **all three** fields and build/start:
+3. Configure **all three** fields. For `/pi-console` or Windows Startup, put them in the stable `~/.pi/agent/pi-console/.env` (Windows: `%USERPROFILE%\.pi\agent\pi-console\.env`), outside the installed npm package:
+   ```dotenv
+   PI_CONSOLE_PUBLIC_ORIGIN=https://console.example.com
+   PI_CONSOLE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+   PI_CONSOLE_ACCESS_AUD=your-application-audience-tag
+   PORT=31717
+   ```
+   Replace the example hostname, team and AUD. The file is explicitly loaded on each start; a workspace's `.env` is **not** loaded through Pi. An incoming `PI_CONSOLE_DATA_DIR` selects a different directory's `.env`; otherwise `PI_CODING_AGENT_DIR` changes the agent directory. Incoming process variables (including empty strings) take precedence over the file, and `/pi-console <port>` takes precedence over its `PORT`. Read errors or partial remote configuration fail startup, rather than falling back to local-only serving. See [startup configuration](operations.en.md#env-for-pi-and-windows-startup) for editing and restart instructions.
+
+   For standalone source development, configure the launching terminal instead and build/start:
    ```powershell
    cd <pi-console-checkout>
    $env:PI_CONSOLE_PUBLIC_ORIGIN = 'https://console.example.com'
@@ -21,7 +30,11 @@ This is an **operator-configured remote mode**, not an automatically published s
 
 ## Operator verification
 
-`npm start` and `npm run dev` automatically load a repo-root `.env` if present (Node 24 `--env-file-if-exists`); explicit process environment variables take precedence. The `.env` file is gitignored. Do not rely on bare `tsx server/index.ts` to load `.env`. Start the server with your own Access configuration from the setup above, then sign in at your public hostname and verify Chat, SSE and Stop before relying on it. Local simulated-token tests are not a substitute for authenticated end-to-end verification. Keep actual hostnames, team domains, application AUDs, tunnel configuration and operational logs out of a public repository.
+`/pi-console` and Windows Startup explicitly load the stable Console `.env` above and never discover arbitrary workspace configuration. Standalone `npm start` and `npm run dev` instead load a repo-root `.env` if present (Node 24 `--env-file-if-exists`); explicit process environment variables take precedence in both cases. Repository `.env` files are gitignored. Do not rely on bare `tsx server/index.ts` to load `.env`. Start the server with your own Access configuration from the setup above, then sign in at your public hostname and verify Chat, SSE and Stop before relying on it. Local simulated-token tests are not a substitute for authenticated end-to-end verification. Keep actual hostnames, team domains, application AUDs, tunnel configuration and operational logs out of a public repository.
+
+### Diagnosing `invalid host`
+
+This `403` comes from Console's Host allowlist, not necessarily from Cloudflare. If the three remote variables are absent, Console is local-only and rejects the public hostname. If remote mode is configured, the request Host must exactly match `PI_CONSOLE_PUBLIC_ORIGIN`; a Tunnel `httpHostHeader` rewrite to `localhost` also fails. Verify the stable `.env`, inherited variables, the correct server/port and restart ownership. With the correct public Host but no Access JWT, a configured remote server returns `401`, not `invalid host`. Never bypass the check or authentication to fix a hostname mismatch.
 
 ## Security contract
 

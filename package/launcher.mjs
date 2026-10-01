@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { consoleDataDir } from './data-directory.mjs';
+import { loadConsoleEnvironment } from './environment.mjs';
 import { fileURLToPath } from 'node:url';
 
 const serverEntry = fileURLToPath(new URL('../server/index.ts', import.meta.url));
@@ -14,6 +15,7 @@ export function hostPiCli(argv = process.argv) {
 
 /** Start only when explicitly requested; loading the Pi extension has no side effects. */
 export async function startConsole({ cwd = process.cwd(), env = process.env, timeoutMs = 10000 } = {}) {
+  env = await loadConsoleEnvironment(env);
   const port = Number(env.PORT ?? 31717);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be an integer from 1 to 65535');
   const childEnv = {

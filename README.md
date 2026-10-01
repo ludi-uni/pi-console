@@ -45,6 +45,8 @@ Pi を再起動するか、**Pi の入力欄**で以下を順に実行します�
 
 Pi が表示した URL（例：`http://127.0.0.1:31717`）を**同じ PC のブラウザー**で開きます。ポートが異なる場合は Pi の表示を優先してください。`127.0.0.1` は接続した端末自身を指すため、その URL をスマートフォンに入力しても PC には接続できません。スマートフォンなどからの遠隔利用は [Cloudflare Tunnel + Access](docs/cloudflare-access.md)を設定してください。
 
+Pi からの起動と Windows スタートアップは、通常 `~/.pi/agent/pi-console/.env` を明示的に読み込みます。Cloudflare 用の設定を npm パッケージの外に保持できます。配置・優先順位・再起動方法は [起動時の `.env` 設定](docs/operations.ja.md#pi-からの起動と-windows-スタートアップの-env)をご覧ください。
+
 ### 3. 最初のセッションを作る
 
 1. **Workspaces** で PC 上の作業フォルダーを選ぶか、**Add a workspace** から登録します。

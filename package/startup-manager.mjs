@@ -42,7 +42,7 @@ async function installShortcut(path){
   const current=await shortcutState(path);
   if(current==='foreign')throw new Error('An unrelated Startup entry already uses Pi Console.lnk');
   await fs.mkdir(dirname(path),{recursive:true});
-  const argumentsText=`--env-file-if-exists=.env --import tsx "${startupEntry}"`;
+  const argumentsText=`--import tsx "${startupEntry}"`;
   await ps(`$s=(New-Object -ComObject WScript.Shell).CreateShortcut(${quote(path)}); $s.TargetPath=${quote(process.execPath)}; $s.Arguments=${quote(argumentsText)}; $s.WorkingDirectory=${quote(packageRoot)}; $s.Description=${quote(marker)}; $s.WindowStyle=7; $s.Save()`);
   if(await shortcutState(path)!=='owned')throw new Error('Startup shortcut verification failed');
 }

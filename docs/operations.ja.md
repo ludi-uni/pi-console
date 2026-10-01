@@ -24,7 +24,34 @@ npm start  # リポジトリ直下の .env を任意で読み込む（Node 24）
 # ローカルモードでは http://127.0.0.1:31717 を開く
 ```
 
-CLI を検出できない場合は、`PI_CONSOLE_PI_COMMAND` に Pi の `dist/bundle/cli.js` の絶対パスを設定します（`pi.cmd` ではありません）。Pi パッケージ経由の起動では、任意の作業フォルダーにある `.env` を読み込みません。遠隔アクセス用の変数はホスト Pi の環境へ渡してください。
+CLI を検出できない場合は、`PI_CONSOLE_PI_COMMAND` に Pi の `dist/bundle/cli.js` の絶対パスを設定します（`pi.cmd` ではありません）。Pi パッケージ経由の起動では、任意の作業フォルダーにある `.env` を読み込みません。代わりに、次の安定した保存先の `.env` を明示的に読み込みます。
+
+### Pi からの起動と Windows スタートアップの `.env`
+
+`/pi-console` と Windows スタートアップは、通常 `~/.pi/agent/pi-console/.env`（Windows: `%USERPROFILE%\.pi\agent\pi-console\.env`）を読み込みます。npm パッケージの外側にあるため、Console の更新でも残ります。以下は既定の配置を編集する例です。
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.pi\agent\pi-console" | Out-Null
+notepad "$env:USERPROFILE\.pi\agent\pi-console\.env"
+```
+
+Cloudflare 用の設定例（すべて実際の値に置き換えてください）：
+
+```dotenv
+PI_CONSOLE_PUBLIC_ORIGIN=https://console.example.com
+PI_CONSOLE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+PI_CONSOLE_ACCESS_AUD=your-application-audience-tag
+# 任意。Tunnel の転送先ポートと一致させます。
+PORT=31717
+```
+
+- `PI_CONSOLE_DATA_DIR` が起動元に指定されていれば、そのディレクトリーの `.env` を読み込みます。未指定で `PI_CODING_AGENT_DIR` があれば、その下の `pi-console/.env` を使います。**読み込み先の指定は、ファイル内ではなく Pi／Windows 起動元の環境で設定してください。** ファイル選択後に別の `.env` を追って読み込むことはありません。
+- 起動元の環境変数は、ファイルの設定より優先します（空文字の指定も優先）。`/pi-console 31718` のような明示的なポート指定も `PORT` より優先します。ファイルの値が効かない場合は、起動元に古い環境変数が残っていないか確認してください。
+- ファイルがなければ従来の環境変数だけで起動します。読み取りエラーは起動エラーになり、Cloudflare の3変数が一部しか設定されていない場合も起動を拒否します。認証を無効化して回避しないでください。
+- 変更後は Console を停止・再起動し、ブラウザーを再読み込みします。Pi が起動したサーバーなら `/pi-console stop` → `/pi-console` です。Windows スタートアップなど別プロセスが起動したサーバーは、そのプロセスを停止してください。Pi 起動元の環境変数を変更した場合は Pi も再起動します。
+- このファイルは信頼できる運用者だけが編集してください。作業フォルダーや npm パッケージ内に置かず、実際の値を公開リポジトリーへコミットしないでください。Windows パスを記載する場合は `C:/...` 表記が安全です（二重引用符内の `\n` は Node の `.env` 構文で改行になります）。
+
+単独の `npm start` / `npm run dev` は引き続き、リポジトリー直下の `.env` を読み込みます。上記の保存先を使うのは Pi パッケージと Windows スタートアップの起動です。Cloudflare Tunnel の Host 設定と認証は [Cloudflare ガイド](cloudflare-access.md)を参照してください。
 
 ## セキュリティと起動
 

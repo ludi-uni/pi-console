@@ -15,6 +15,9 @@ test('first interactive Pi session registers only its own shortcut; Settings off
   try{
     assert.deepEqual(await startupStatus(opts),{supported:true,enabled:true,installed:false,conflict:false});
     await ensureStartupOnPiSession(opts);assert.equal((await startupStatus(opts)).installed,true);
+    const inspect=`$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${link.replaceAll("'","''")}');Write-Output $s.Arguments`;
+    const {stdout:argumentsText}=await promisify(execFile)('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(inspect,'utf16le').toString('base64')],{windowsHide:true});
+    assert.match(argumentsText,/--import tsx/);assert.doesNotMatch(argumentsText,/--env-file/);
     await ensureStartupOnPiSession(opts);assert.equal((await stat(link)).isFile(),true);
     assert.equal((await setStartup(false,opts)).installed,false);
     assert.deepEqual(JSON.parse(await readFile(join(agentDir,'pi-console','startup.json'),'utf8')),{enabled:false});
