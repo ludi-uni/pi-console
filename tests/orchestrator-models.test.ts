@@ -17,6 +17,51 @@ const routing={version:1,backends:{legacy:{vision:true}},capabilities:{
   custom:{primary:'user-demo',fallback:[]},
 }};
 
+test('vision scope gates image input separately from agent roles: image review needs vision+review, scout/planner need vision+planning',()=>{
+  // Rewire every capability's user-model primary at the model under test.
+  const route=(id:string)=>({...routing,capabilities:Object.fromEntries(Object.entries(routing.capabilities).map(([k,v]:[string,any])=>[k,{...v,primary:`user-${id}`,fallback:v.fallback.map((b:string)=>b.startsWith('user-')?`user-${id}`:b)}]))});
+  const visionReview:Overlay={version:1,models:{vr:{id:'vr',name:'Vision Reviewer',provider:'test',model:'vr',vision:true,scopes:['vision','review']}}};
+  const view=applyOverlay(route(Object.keys(visionReview.models)[0]),registry,visionReview);
+  assert.equal(view.routing.capabilities['deep-review'].primary,'user-vr','review scope keeps text review eligible');
+  assert.equal(view.routing.capabilities['vision-reasoning'].primary,'user-vr');
+  // reviewer role routing: allowed for review+vision tasks, still denied for coder
+  assert.equal(routingForRole(view.routing,view.registry,'reviewer').capabilities['vision-reasoning'].primary,'user-vr');
+  assert.equal(routingForRole(view.routing,view.registry,'coder').capabilities['vision-reasoning'].primary,'console-denied');
+  // vision-only (no review scope): capability chain admits it, but the reviewer role cannot use it
+  const visionOnly:Overlay={version:1,models:{vo:{id:'vo',name:'Vision only',provider:'test',model:'vo',vision:true,scopes:['vision']}}};
+  const voView=applyOverlay(route(Object.keys(visionOnly.models)[0]),registry,visionOnly);
+  assert.equal(voView.routing.capabilities['vision-reasoning'].primary,'user-vo');
+  assert.equal(voView.routing.capabilities['deep-review'].primary,'console-denied','vision scope alone must not grant review work');
+  assert.equal(routingForRole(voView.routing,voView.registry,'reviewer').capabilities['vision-reasoning'].primary,'console-denied','reviewer cannot borrow a vision-only model');
+  assert.equal(routingForRole(voView.routing,voView.registry,'visual').capabilities['vision-reasoning'].primary,'user-vo');
+  // review scope + image-capable hardware but NO vision checkbox: text review passes,
+  // image review and requires.vision routes are refused — the vision scope permission
+  // is separate from the model's image-input flag.
+  const reviewOnly:Overlay={version:1,models:{ro:{id:'ro',name:'Review only',provider:'test',model:'ro',vision:true,scopes:['review']}}};
+  const roView=applyOverlay(route(Object.keys(reviewOnly.models)[0]),registry,reviewOnly);
+  assert.equal(roView.routing.capabilities['deep-review'].primary,'user-ro','text review needs only review scope');
+  assert.equal(roView.routing.capabilities['vision-reasoning'].primary,'console-denied','image review also needs the vision checkbox');
+  const deepVision=applyOverlay({...route('ro'),capabilities:{...route('ro').capabilities,'deep-review':{primary:'user-ro',fallback:[],requires:{vision:true}}}},registry,reviewOnly);
+  assert.equal(deepVision.routing.capabilities['deep-review'].primary,'console-denied','reviewer+vision hardware without vision scope cannot take image review');
+  // planning + image-capable but no vision checkbox: image planning is refused too
+  const planOnly:Overlay={version:1,models:{pl:{id:'pl',name:'Planner',provider:'test',model:'pl',vision:true,scopes:['planning']}}};
+  const plView=applyOverlay(route('pl'),registry,planOnly);
+  assert.equal(plView.routing.capabilities['vision-reasoning'].primary,'console-denied','image planning needs the vision checkbox');
+  // scout/design-planner taking images need planning role + vision flag (vision scope marks the capability)
+  const scoutVision:Overlay={version:1,models:{sv:{id:'sv',name:'Vision scout',provider:'test',model:'sv',vision:true,scopes:['planning','vision']}}};
+  const svView=applyOverlay(route(Object.keys(scoutVision.models)[0]),registry,scoutVision);
+  assert.equal(routingForRole(svView.routing,svView.registry,'scout').capabilities['vision-reasoning'].primary,'user-sv');
+  assert.equal(routingForRole(svView.routing,svView.registry,'design-planner').capabilities['vision-reasoning'].primary,'user-sv');
+  const scoutNoVision={...scoutVision,models:{sv:{...scoutVision.models.sv,vision:false}}} as Overlay;
+  assert.equal(routingForRole(applyOverlay(route(Object.keys(scoutNoVision.models)[0]),registry,scoutNoVision).routing,applyOverlay(route(Object.keys(scoutNoVision.models)[0]),registry,scoutNoVision).registry,'scout').capabilities['vision-reasoning'].primary,'console-denied','image-taking scout still needs model vision');
+  const scoutNoScope={...scoutVision,models:{sv:{...scoutVision.models.sv,scopes:['planning']}}} as Overlay; // vision:true but checkbox off
+  assert.equal(applyOverlay(route('sv'),registry,scoutNoScope).routing.capabilities['vision-reasoning'].primary,'console-denied','vision hardware without the vision checkbox is refused at routing');
+  // capability-level requires.vision forces the same gate even without the vision scope tag
+  const reqCaps:Overlay={version:1,models:{vr:{id:'vr',name:'vr',provider:'t',model:'m',vision:true,scopes:['review']}},capabilities:{custom:{primary:'user-vr',fallback:[],scope:'review'}}};
+  const withReq=applyOverlay({...route('vr'),capabilities:{...route('vr').capabilities,custom:{primary:'user-vr',fallback:[],requires:{vision:true}}}},registry,reqCaps);
+  assert.equal(withReq.routing.capabilities.custom.primary,'console-denied','requires.vision rejects non-vision models regardless of scope');
+});
+
 test('usage permissions filter primary and fallbacks, preserve requirements and deny unknown custom scopes',()=>{
   const view=applyOverlay(routing,registry,overlay);
   assert.deepEqual(view.routing.capabilities['strong-code'],{primary:'user-demo',fallback:['legacy']});

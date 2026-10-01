@@ -4,11 +4,11 @@ import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceStore, readSession, listSessions } from '../server/runtime/workspaces.ts';
-import { groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts, visibleExecutionRows } from '../web/ui-logic.ts';
+import { acceptSnapshot, groupWorkspaces, filterSessions, connectionLabel, recentIssue, validQuickPrompts, visibleExecutionRows } from '../web/ui-logic.ts';
 import type { ExecutionEvent, ExecutionNode, ExecutionStateSnapshot } from '../shared/types.ts';
 import ChatItem from '../web/ChatMessage.tsx';
 import MarkdownContent, { workspacePath, workspaceReference } from '../web/MarkdownContent.tsx';
-import { completionIds, freshCompletions } from '../web/notification-logic.ts';
+import { notifiedCompletionIds, freshCompletions } from '../web/notification-logic.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import KitRunCard, { kitRequestTitle, kitRunProgress } from '../web/KitRunCard.tsx';
@@ -46,7 +46,7 @@ test('session title fallback, recent ordering, search and running first',async()
 });
 test('Recent issue clears on success, dismissal or expiry; newer failures remain visible',()=>{
   const now=Date.parse('2026-01-01T12:00:00Z');
-  const event=(seq:number,type:ExecutionEvent['type'],minutesAgo:number):ExecutionEvent=>({schemaVersion:1,eventId:`event-${seq}`,seq,timestamp:new Date(now-minutesAgo*60_000).toISOString(),workspaceId:'w',sessionId:'s',runId:'r',type,entityId:'r',source:'pi-rpc',certainty:'observed',payload:{}});
+  const event=(seq:number,type:ExecutionEvent['type'],minutesAgo:number):ExecutionEvent=>({schemaVersion:1,eventId:`event-${seq}`,seq,generation:'g1',timestamp:new Date(now-minutesAgo*60_000).toISOString(),workspaceId:'w',sessionId:'s',runId:'r',type,entityId:'r',source:'pi-rpc',certainty:'observed',payload:{}});
   const failed=event(1,'ToolFailed',0.05),success=event(2,'RunCompleted',0.03),newFailure=event(3,'RunFailed',0);
   assert.equal(recentIssue([failed],[],now)?.eventId,failed.eventId);
   assert.equal(recentIssue([failed,success],[],now),undefined);
@@ -130,10 +130,51 @@ test('Markdown output supports GFM, safe links and file references',()=>{
 });
 
 test('completion notifications ignore initial history and repeat poll results',()=>{
-  const done={sessionId:'s',workspaceId:'w',sessionName:'work',workspaceName:'space',running:false,decisionCount:0,updatedAt:'',work:[],completion:{id:'done-1',status:'completed' as const,at:''}};
+  const done={sessionId:'s',workspaceId:'w',sessionName:'work',workspaceName:'space',running:false,decisionCount:0,updatedAt:'',work:[],completion:{id:'done-1',status:'completed' as const,at:'',scope:'conversation' as const}};
   assert.deepEqual(freshCompletions(undefined,[done]),[]);
   assert.deepEqual(freshCompletions(new Set(),[done]),[done]);
-  assert.deepEqual(freshCompletions(completionIds([done]),[done]),[]);
+  assert.deepEqual(freshCompletions(notifiedCompletionIds([done]),[done]),[]);
+});
+
+test('busy completions stay unseen, notify exactly once when eligible and never on first load',()=>{
+  const done={sessionId:'s',workspaceId:'w',sessionName:'work',workspaceName:'space',running:false,decisionCount:0,updatedAt:'',work:[],completion:{id:'done-1',status:'completed' as const,at:'',scope:'conversation' as const}};
+  const running={...done,running:true};
+  // While running, the completion is pending: it is not consumed into `seen`,
+  // so a later idle poll with the same ID still notifies once.
+  assert.deepEqual(freshCompletions(notifiedCompletionIds([running]),[running]),[]);
+  const seenAfterRunning=notifiedCompletionIds([running]);
+  assert.deepEqual([...seenAfterRunning],[],'a pending completion must not be marked seen while busy');
+  assert.deepEqual(freshCompletions(seenAfterRunning,[done]),[done],'the deferred completion notifies when the session goes idle');
+  const seenAfterNotify=new Set([...seenAfterRunning,...notifiedCompletionIds([done])]);
+  assert.deepEqual(freshCompletions(seenAfterNotify,[done]),[],'notified completion never repeats');
+  // The same deferral applies to an unanswered decision.
+  const waiting={...done,decisionCount:1};
+  assert.deepEqual([...notifiedCompletionIds([waiting])],[]);
+  assert.deepEqual(freshCompletions(notifiedCompletionIds([waiting]),[done]),[done]);
+  // First load (no `seen` baseline) suppresses already-eligible history.
+  assert.deepEqual(freshCompletions(undefined,[done]),[]);
+  // Kit completions follow the same deferral rule.
+  const kitDone={...done,completion:{...done.completion,id:'kit-1',scope:'kit' as const}};
+  const kitRunning={...kitDone,running:true};
+  assert.deepEqual([...notifiedCompletionIds([kitRunning])],[]);
+  assert.deepEqual(freshCompletions(notifiedCompletionIds([kitRunning]),[kitDone]),[kitDone]);
+  // Subagent completions are never eligible, pending or not.
+  const childDone={...done,completion:{...done.completion,id:'sub-1',scope:'subagent' as const}};
+  assert.deepEqual([...notifiedCompletionIds([childDone])],[]);
+  assert.deepEqual(freshCompletions(new Set(),[childDone]),[]);
+});
+
+test('completion notifications skip subagent ends and sessions still running or awaiting input',()=>{
+  const base={sessionId:'s',workspaceId:'w',sessionName:'work',workspaceName:'space',decisionCount:0,updatedAt:'',work:[]};
+  const childDone={...base,running:false,completion:{id:'c1',status:'completed' as const,at:'',scope:'subagent' as const}};
+  const stillRunning={...base,running:true,completion:{id:'c2',status:'completed' as const,at:'',scope:'conversation' as const}};
+  const needsInput={...base,running:false,decisionCount:1,completion:{id:'c3',status:'completed' as const,at:'',scope:'conversation' as const}};
+  const kitDone={...base,running:false,completion:{id:'c4',status:'completed' as const,at:'',scope:'kit' as const}};
+  assert.deepEqual(freshCompletions(new Set(),[childDone,stillRunning,needsInput]),[],'a finished child or a stale terminal state must not notify while the conversation is still alive');
+  // When the busy flags clear, the SAME completion id becomes the deferred notification.
+  const unblocked={...base,running:false,completion:needsInput.completion};
+  assert.deepEqual(freshCompletions(notifiedCompletionIds([needsInput]),[unblocked]),[unblocked],'clearing the decision surfaces the pending completion once');
+  assert.deepEqual(freshCompletions(new Set(),[kitDone]),[kitDone],'a finished kit run still notifies');
 });
 
 test('quick prompts and connection states are deterministic',()=>{
@@ -146,4 +187,15 @@ test('quick prompts and connection states are deterministic',()=>{
     [{online:true,server:true,sse:'connected',runtime:'stopped'},'Pi process stopped'],
     [{online:true,server:true,sse:'connected',runtime:'running'},'Runtime healthy']
   ] as const)assert.equal(connectionLabel(input),label);
+});
+
+test('acceptSnapshot only advances within one generation; a restart re-baselines via a fresh snapshot, not a stale response',()=>{
+  const old={generation:'gen-a',seq:100},next={generation:'gen-b',seq:0};
+  assert.equal(acceptSnapshot(old,{generation:'gen-a',seq:99}),false,'lower seq in same generation is stale');
+  assert.equal(acceptSnapshot(old,{generation:'gen-a',seq:101}),true);
+  // A different generation never wins by seq alone: the client only adopts it through
+  // an explicit fresh baseline (resume/ref.current=undefined), never a delayed reply.
+  assert.equal(acceptSnapshot(old,next),false,'a response from another generation is not auto-adopted');
+  assert.equal(acceptSnapshot(next,{generation:'gen-a',seq:500}),false,'old generation late events never win');
+  assert.equal(acceptSnapshot(undefined,{generation:'gen-b',seq:0}),true,'no baseline yet -> adopt');
 });

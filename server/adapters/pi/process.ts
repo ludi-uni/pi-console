@@ -45,6 +45,13 @@ export class PiProcess {
   private seq = 0;
   private intendedStop = false;
   private stderr = '';
+  // Settled once the OS reports the child 'close' event (stdio flushed), or rejected on a
+  // spawn-level 'error' when no close ever arrives. Registered at spawn time so close()
+  // never waits on a 'close' that already fired — previously a CLI exiting before the
+  // startup get_state/get_messages replies made close() hang forever and left
+  // RuntimeManager.open's `starting` entry pinned until its finally ran.
+  private closed = Promise.resolve();
+  private exited = false;
   onRecord: (record: RecordValue) => void = () => {};
   onState: (state: ProcessState, reason?: string) => void = () => {};
   constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string) {}
@@ -57,6 +64,13 @@ export class PiProcess {
       const args = [piExecutable(), '--mode', 'rpc', '--extension', consoleExtension(), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
       const child = spawn(process.execPath, args, { cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
+      // only once(child,'close') counts as a real exit; a bare 'error' without 'close'
+      // rejects this promise so close() falls back to waiting instead of a false settle.
+      this.closed = new Promise<void>((resolve, reject) => {
+        child.once('close', () => { this.exited = true; resolve(); });
+        child.once('error', error => { if (!this.exited) reject(error); });
+      });
+      this.closed.catch(() => {});
       child.stderr.on('data', (data: Buffer) => { this.stderr = (this.stderr + data.toString('utf8')).slice(-4096); });
       child.stdout.on('data', (data: Buffer) => {
         try { for (const record of parser.push(data) as RecordValue[]) this.handle(record); }
@@ -66,10 +80,12 @@ export class PiProcess {
       child.on('close', (code, signal) => {
         try { parser.finish(); } catch (error) { this.fail(error as Error); }
         if (this.state === 'failed') return;
-        if (this.intendedStop) { if (this.state !== 'stopping') this.set('stopping'); this.set('stopped'); }
+        if (this.intendedStop) { if (this.state === 'stopping') this.set('stopped'); else if (this.state !== 'stopped') { this.set('stopping'); this.set('stopped'); } }
         else this.fail(new Error(`Pi exited unexpectedly (${code ?? signal}); ${this.stderr.slice(-500)}`));
       });
       await once(child, 'spawn');
+      // Spawn succeeded but the CLI may already have exited (or be about to) before the
+      // first RPC reply. Any pending call still settles via fail() on 'close'.
       this.set('running');
     } catch (error) { this.fail(error as Error); throw error; }
   }
@@ -148,14 +164,19 @@ export class PiProcess {
   async close(): Promise<void> {
     if (!this.child || this.state === 'stopped') return;
     this.intendedStop = true;
+    // 'starting' -> 'stopping' is valid, so a CLI that died before the first RPC reply can
+    // still be shut down cleanly; a second close() just waits on the already-tracked exit.
     if (this.state !== 'stopping') this.set('stopping');
     const child = this.child;
     for (const [id, task] of this.pending) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.pending.delete(id); }
     for (const [id, task] of this.inspections) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.inspections.delete(id); }
-    const closed = once(child, 'close').catch(() => {});
-    child.stdin.end();
-    const timer = setTimeout(() => child.kill(), 3500);
-    await closed; clearTimeout(timer);
+    try { child.stdin.end(); } catch { /* The pipe may already be broken after an exit. */ }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* Already gone. */ } }, 3500);
+    timer.unref?.();
+    await this.closed.catch(() => {}); clearTimeout(timer);
+    // The 'close' listener may have run before close() was called (exit before the first
+    // RPC reply): settle 'stopping' now so the state never remains stuck on stopping.
+    if (this.state === 'stopping') this.set('stopped');
   }
   // Test-only failure injection: still goes through OS process lifecycle.
   killForTest(): void { this.child?.kill(); }

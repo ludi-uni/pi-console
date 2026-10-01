@@ -41,7 +41,7 @@ test('short landscape keeps the conversation visible while the composer remains 
     await expect(controls).toHaveAttribute('aria-expanded','false');
     await expect(controls).toBeFocused();
     const chooser=page.waitForEvent('filechooser');
-    await page.getByRole('button',{name:'＋ Attach files'}).click();
+    await page.getByRole('button',{name:'Attach files'}).click();
     await (await chooser).setFiles({name:'note.txt',mimeType:'text/plain',buffer:Buffer.from('landscape attachment')});
     await expect(page.getByLabel('Attached files')).toContainText('note.txt');
     expect(await prompt.evaluate(el=>{const box=el.getBoundingClientRect();return document.elementFromPoint(box.left+box.width/2,box.top+Math.min(22,box.height/2))===el})).toBe(true);

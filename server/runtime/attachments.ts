@@ -8,6 +8,13 @@ const imageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'
 const textType = (mime: string) => mime.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript'].includes(mime);
 const safeName = (name: unknown): name is string => typeof name === 'string' && name.length > 0 && name.length <= 120 && !/[\\/\x00-\x1f\x7f]/.test(name);
 const escaped = (name: string) => name.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
+const markerSafeName = (name: string) => name.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
+const markerSafeType = (mimeType: string) => mimeType.replace(/[^\w.\-+\/]/g, '');
+// Marker tags let the console separate user text from attachment payloads on
+// echo/resume. Only `pi_attachment` is parsed back; raw `<attached_file>` bodies
+// stay opaque so the model still receives the full prompt verbatim.
+const textMarker = (name: string, mimeType: string, bytes: number) => `<pi_attachment kind="text" name="${markerSafeName(name)}" type="${markerSafeType(mimeType)}" bytes="${bytes}">`;
+const imageMarker = (name: string, mimeType: string, bytes: number) => `<pi_attachment kind="image" name="${markerSafeName(name)}" type="${markerSafeType(mimeType)}" bytes="${bytes}"/>`;
 
 export function prepareAttachments(message: unknown, attachments: unknown): { message: string; images: { type: 'image'; data: string; mimeType: string }[] } {
   if (typeof message !== 'string' || message.length > 200_000) throw new Error('prompt text is invalid or too long');
@@ -21,7 +28,7 @@ export function prepareAttachments(message: unknown, attachments: unknown): { me
       const size = Buffer.byteLength(item.text);
       if (!size || size > MAX_TEXT || item.text.includes('\0')) throw new Error('text attachment must be nonempty UTF-8 and at most 64 KiB');
       total += size;
-      text += `\n\n<attached_file name="${escaped(item.name)}">\n${item.text}\n</attached_file>`;
+      text += `\n\n${textMarker(item.name, item.mimeType, size)}\n<attached_file name="${escaped(item.name)}">\n${item.text}\n</attached_file>`;
     } else if (item.kind === 'image' && imageTypes.has(item.mimeType) && typeof item.data === 'string') {
       if (item.data.length > Math.ceil(MAX_IMAGE / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(item.data)) throw new Error('invalid image attachment');
       const bytes = Buffer.from(item.data, 'base64');
@@ -33,7 +40,7 @@ export function prepareAttachments(message: unknown, attachments: unknown): { me
       if (!valid) throw new Error('image content does not match its type');
       total += bytes.length;
       images.push({ type: 'image', data: item.data, mimeType: item.mimeType });
-      text += `\n[Attached image: ${item.name}]`;
+      text += `\n${imageMarker(item.name, item.mimeType, bytes.length)}\n[Attached image: ${item.name}]`;
     } else throw new Error('unsupported attachment type; choose text or PNG/JPEG/GIF/WebP images');
     if (total > MAX_TOTAL) throw new Error('attachments exceed 8 MiB total');
   }

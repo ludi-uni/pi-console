@@ -13,6 +13,7 @@ import { WorkspaceStore } from './runtime/workspaces.ts';
 import { readWorkspaceText } from './runtime/workspace-text.ts';
 import {openWorkspaceMedia,mediaRange} from './runtime/workspace-media.ts';
 import { accessConfig, allowedHost, allowedPost, createAccessVerifier } from './access.ts';
+import { readJsonBody } from './body.ts';
 
 const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-console');
 const assetsDir = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -27,10 +28,7 @@ const access = accessConfig(process.env);
 const verifyAccess = access && createAccessVerifier(access);
 const streams = new Set<ServerResponse>();
 const respond = (res: ServerResponse, code: number, value: unknown) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
-async function body(req: IncomingMessage, maxLength = 1024 * 1024): Promise<any> {
-  let data = ''; for await (const chunk of req) { data += chunk; if (data.length > maxLength) throw new Error('request too large'); }
-  return data ? JSON.parse(data) : {};
-}
+
 const server = createServer(async (req, res) => {
   try {
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
@@ -59,47 +57,50 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/activity') return respond(res, 200, { sessions: await runtime.activity() });
     if (req.method === 'GET' && url.pathname === '/api/startup') return respond(res,200,await startupStatus());
-    if (req.method === 'POST' && url.pathname === '/api/startup') {const b=await body(req);return respond(res,200,await setStartup(b.enabled))}
+    if (req.method === 'POST' && url.pathname === '/api/startup') {const b=await readJsonBody(req);return respond(res,200,await setStartup(b.enabled))}
     if (req.method === 'GET' && url.pathname === '/api/session-retention') return respond(res,200,recycling.settings());
-    if (req.method === 'POST' && url.pathname === '/api/session-retention') return respond(res,200,await recycling.update(await body(req)));
-    if (req.method === 'POST' && url.pathname === '/api/session/recycle') {const b=await body(req);return respond(res,200,await recycling.recycle(b.workspaceId,b.sessionId))}
-    if (req.method === 'POST' && url.pathname === '/api/workspaces/update') { const b=await body(req);return respond(res,200,{workspace:await store.update(b.id,{name:b.name,pinned:b.pinned,open:b.open})}); }
-    if (req.method === 'POST' && url.pathname === '/api/workspaces/remove') { const b=await body(req);await runtime.removeWorkspace(b.id);return respond(res,200,{ok:true}); }
-    if (req.method === 'POST' && url.pathname === '/api/workspaces/explorer') { const b=await body(req);await openWorkspaceInExplorer(store,b.id);return respond(res,200,{ok:true}); }
+    if (req.method === 'POST' && url.pathname === '/api/session-retention') return respond(res,200,await recycling.update(await readJsonBody(req)));
+    if (req.method === 'POST' && url.pathname === '/api/session/recycle') {const b=await readJsonBody(req);return respond(res,200,await recycling.recycle(b.workspaceId,b.sessionId))}
+    if (req.method === 'POST' && url.pathname === '/api/workspaces/update') { const b=await readJsonBody(req);return respond(res,200,{workspace:await store.update(b.id,{name:b.name,pinned:b.pinned,open:b.open})}); }
+    if (req.method === 'POST' && url.pathname === '/api/workspaces/remove') { const b=await readJsonBody(req);await runtime.removeWorkspace(b.id);return respond(res,200,{ok:true}); }
+    if (req.method === 'POST' && url.pathname === '/api/workspaces/explorer') { const b=await readJsonBody(req);await openWorkspaceInExplorer(store,b.id);return respond(res,200,{ok:true}); }
     if (req.method === 'GET' && url.pathname === '/api/directories') return respond(res, 200, await listDirectories(url.searchParams.get('path') ?? undefined));
-    if (req.method === 'POST' && url.pathname === '/api/directories/create') { const b = await body(req); return respond(res, 200, await createDirectory(b.parent, b.name)); }
+    if (req.method === 'POST' && url.pathname === '/api/directories/create') { const b = await readJsonBody(req); return respond(res, 200, await createDirectory(b.parent, b.name)); }
     if (req.method === 'GET' && url.pathname === '/api/pets') return respond(res,200,{pets:await listPets()});
     if (req.method === 'GET' && url.pathname === '/api/pet/file') {try{const {data,mime}=await petFile(url.searchParams.get('pet')??'',url.searchParams.get('file')??'',undefined,url.searchParams.get('source')??undefined);res.writeHead(200,{'content-type':mime,'cache-control':'private, max-age=300'});res.end(data);return;}catch{return respond(res,404,{error:'pet not found'});}}
     if (req.method === 'GET' && url.pathname === '/api/quick-prompts') return respond(res,200,{prompts:store.quickPrompts()});
-    if (req.method === 'POST' && url.pathname === '/api/quick-prompts') { const b=await body(req);return respond(res,200,{prompts:await store.savePrompts(b.prompts)}); }
-    if (req.method === 'POST' && url.pathname === '/api/workspaces') { const b = await body(req); return respond(res, 200, { workspace: await store.add(b.path) }); }
+    if (req.method === 'POST' && url.pathname === '/api/quick-prompts') { const b=await readJsonBody(req);return respond(res,200,{prompts:await store.savePrompts(b.prompts)}); }
+    if (req.method === 'POST' && url.pathname === '/api/workspaces') { const b = await readJsonBody(req); return respond(res, 200, { workspace: await store.add(b.path) }); }
     if (req.method === 'GET' && url.pathname === '/api/sessions') return respond(res, 200, { sessions: await runtime.sessions(wid) });
-    if (req.method === 'POST' && url.pathname === '/api/sessions') { const b = await body(req); return respond(res, 200, { session: (await runtime.create(b.workspaceId)).session }); }
-    if (req.method === 'POST' && url.pathname === '/api/resume') { const b = await body(req); return respond(res, 200, { snapshot: await runtime.resume(b.workspaceId, b.sessionId) }); }
+    if (req.method === 'POST' && url.pathname === '/api/sessions') { const b = await readJsonBody(req); return respond(res, 200, { session: (await runtime.create(b.workspaceId)).session }); }
+    if (req.method === 'POST' && url.pathname === '/api/resume') { const b = await readJsonBody(req); return respond(res, 200, { snapshot: await runtime.resume(b.workspaceId, b.sessionId) }); }
     if (req.method === 'GET' && url.pathname === '/api/session/options') return respond(res, 200, await runtime.options(wid, sid));
-    if (req.method === 'POST' && url.pathname === '/api/session/model') { const b = await body(req); return respond(res, 200, await runtime.setModel(b.workspaceId, b.sessionId, b.provider, b.modelId)); }
-    if (req.method === 'POST' && url.pathname === '/api/session/thinking') { const b = await body(req); return respond(res, 200, await runtime.setThinking(b.workspaceId, b.sessionId, b.level)); }
+    if (req.method === 'POST' && url.pathname === '/api/session/model') { const b = await readJsonBody(req); return respond(res, 200, await runtime.setModel(b.workspaceId, b.sessionId, b.provider, b.modelId)); }
+    if (req.method === 'POST' && url.pathname === '/api/session/thinking') { const b = await readJsonBody(req); return respond(res, 200, await runtime.setThinking(b.workspaceId, b.sessionId, b.level)); }
     if (req.method === 'GET' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await orchestratorSettings());
-    if (req.method === 'POST' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await updateOrchestratorSettings(await body(req)));
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/settings') return respond(res, 200, await updateOrchestratorSettings(await readJsonBody(req)));
     if (req.method === 'GET' && url.pathname === '/api/orchestrator') return respond(res, 200, await runtime.kitStatus(wid, sid));
     if (req.method === 'GET' && url.pathname === '/api/orchestrator/decisions') return respond(res, 200, await runtime.kitDecisions(wid, sid));
-    if (req.method === 'POST' && url.pathname === '/api/orchestrator/answer') { const b=await body(req); return respond(res, 200, await runtime.answerOrchestrator(b.workspaceId,b.sessionId,b.runId,b.decisionId,b.answer)); }
-    if (req.method === 'POST' && url.pathname === '/api/orchestrator/resume') { const b=await body(req); return respond(res, 200, await runtime.retryOrchestrator(b.workspaceId,b.sessionId,b.runId)); }
-    if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/retry') { const b=await body(req); return respond(res, 200, await runtime.retryKitReport(b.workspaceId,b.sessionId,b.runId)); }
-    if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/handled') { const b=await body(req); return respond(res, 200, await runtime.markKitReportHandled(b.workspaceId,b.sessionId,b.runId,b.confirmed)); }
-    if (req.method === 'POST' && url.pathname === '/api/subagents/inspect') { const b = await body(req); return respond(res, 200, await runtime.inspectSubagent(b.workspaceId, b.sessionId, b.nodeId)); }
-    if (req.method === 'POST' && url.pathname === '/api/orchestrator/start') { const b = await body(req); return respond(res, 202, await runtime.startOrchestrator(b.workspaceId, b.sessionId, b.request)); }
-    if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await body(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? [], b.mode) }); }
-    if (req.method === 'POST' && url.pathname === '/api/stop') { const b = await body(req); await runtime.stop(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
-    if (req.method === 'POST' && url.pathname === '/api/close') { const b = await body(req); await runtime.closeSession(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/answer') { const b=await readJsonBody(req); return respond(res, 200, await runtime.answerOrchestrator(b.workspaceId,b.sessionId,b.runId,b.decisionId,b.answer)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/resume') { const b=await readJsonBody(req); return respond(res, 200, await runtime.retryOrchestrator(b.workspaceId,b.sessionId,b.runId)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/retry') { const b=await readJsonBody(req); return respond(res, 200, await runtime.retryKitReport(b.workspaceId,b.sessionId,b.runId)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/handled') { const b=await readJsonBody(req); return respond(res, 200, await runtime.markKitReportHandled(b.workspaceId,b.sessionId,b.runId,b.confirmed)); }
+    if (req.method === 'POST' && url.pathname === '/api/subagents/inspect') { const b = await readJsonBody(req); return respond(res, 200, await runtime.inspectSubagent(b.workspaceId, b.sessionId, b.nodeId)); }
+    if (req.method === 'POST' && url.pathname === '/api/orchestrator/start') { const b = await readJsonBody(req); return respond(res, 202, await runtime.startOrchestrator(b.workspaceId, b.sessionId, b.request)); }
+    if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await readJsonBody(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? [], b.mode) }); }
+    if (req.method === 'POST' && url.pathname === '/api/stop') { const b = await readJsonBody(req); await runtime.stop(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
+    if (req.method === 'POST' && url.pathname === '/api/close') { const b = await readJsonBody(req); await runtime.closeSession(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
     if (req.method === 'GET' && url.pathname === '/api/state') return respond(res, 200, await runtime.snapshot(wid, sid));
     if (req.method === 'GET' && url.pathname === '/api/events') {
       const from = Number(url.searchParams.get('since') ?? 0);
       if (!Number.isSafeInteger(from) || from < 0) throw new Error('invalid cursor');
+      const generation = url.searchParams.get('generation') ?? '';
       const replay: any[] = [];
       let live = false;
-      const unsubscribe = await runtime.subscribe(wid, sid, ev => { if (live && !res.destroyed) res.write(`id: ${ev.seq}\nevent: execution\ndata: ${JSON.stringify(ev)}\n\n`); else replay.push(ev); });
-      const snapshot = await runtime.snapshot(wid, sid);
+      // Subscribe first, then snapshot: events emitted in between land in `replay` instead
+      // of silently skipping past the client's cursor.
+      const { unsubscribe, snapshot } = await runtime.subscribedSnapshot(wid, sid, ev => { if (live && !res.destroyed) res.write(`id: ${ev.seq}\nevent: execution\ndata: ${JSON.stringify(ev)}\n\n`); else replay.push(ev); });
+      if (generation && generation !== snapshot.generation) { unsubscribe(); return respond(res, 409, { error: 'event generation changed; reload snapshot' }); }
       if (snapshot.events.length && from < snapshot.events[0].seq - 1) { unsubscribe(); return respond(res, 409, { error: 'event gap; reload snapshot' }); }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' }); res.flushHeaders(); streams.add(res);
       for (const ev of snapshot.events) if (ev.seq > from) res.write(`id: ${ev.seq}\nevent: execution\ndata: ${JSON.stringify(ev)}\n\n`);

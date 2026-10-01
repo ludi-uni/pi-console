@@ -12,7 +12,7 @@ test('fresh tool failure appears over the UI and expires without moving the chat
     await page.getByRole('button',{name:'New Session'}).click();const createdResponse=await created;expect(createdResponse.ok()).toBeTruthy();
     const selectedSession=(await createdResponse.json()).session;
     await expect(page.getByRole('button',{name:'← Sessions'})).toBeVisible();
-    const failure={schemaVersion:1,eventId:'tool-failure-once',seq:999,timestamp:new Date().toISOString(),workspaceId:selectedSession.workspaceId,sessionId:selectedSession.id,runId:'run',type:'ToolFailed',entityId:'tool',source:'pi-rpc',status:'failed',certainty:'observed',payload:{summary:'powershell exited with an error'}};
+    const failure={schemaVersion:1,eventId:'tool-failure-once',seq:999,generation:'e2e-fixture',timestamp:new Date().toISOString(),workspaceId:selectedSession.workspaceId,sessionId:selectedSession.id,runId:'run',type:'ToolFailed',entityId:'tool',source:'pi-rpc',status:'failed',certainty:'observed',payload:{summary:'powershell exited with an error'}};
     let issuedAt:string|undefined;const events=()=>{const timestamp=issuedAt??=new Date().toISOString();return [{...failure,timestamp},...Array.from({length:230},(_,i)=>({...failure,timestamp,eventId:`progress-${i}`,seq:1000+i,type:'ToolProgress',status:'running',payload:{summary:`Progress ${i}`}}))]};
     await page.getByRole('button',{name:'← Sessions'}).click();
     await page.route('**/api/state?*',async route=>{const response=await route.fetch(),body=await response.json();body.events=events();body.seq=1229;await route.fulfill({response,body:JSON.stringify(body)})});

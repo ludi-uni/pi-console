@@ -50,7 +50,9 @@ test('HTTP server ↔ Pi adapter session lifecycle and canonical SSE', { timeout
     const untilDone=Date.now()+5000;while (!events.some(e=>e.type==='RunCompleted')&&Date.now()<untilDone)await new Promise(r=>setTimeout(r,30));
     assert.ok(events.some(e=>e.type==='MessageDelta'),JSON.stringify(events));assert.ok(events.some(e=>e.type==='RunCompleted'));
     const resumed=await request('/api/resume',{workspaceId:ws.id,sessionId:session.id});
-    assert.ok(resumed.snapshot.chat.some((m:any)=>m.role==='user'&&m.text.includes('ATTACHMENT_HTTP_OK')));
+    const echoed=resumed.snapshot.chat.find((m:any)=>m.role==='user');
+    assert.equal(echoed.text,'hello');
+    assert.ok(echoed.attachments?.some((a:any)=>a.name==='note.txt'&&a.preview?.includes('ATTACHMENT_HTTP_OK')),JSON.stringify(echoed));
     assert.equal(resumed.snapshot.activeRunId,undefined);
     const finished=(await request('/api/activity')).sessions;
     assert.equal(finished.length,1);assert.equal(finished[0].sessionName,'Renamed task');assert.equal(finished[0].running,false);assert.equal(finished[0].completion.status,'completed');

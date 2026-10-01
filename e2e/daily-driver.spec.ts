@@ -21,7 +21,7 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
     const firstResponse=await firstSession;expect(firstResponse.ok(),await firstResponse.text()).toBeTruthy();
     await expect(page.getByLabel('Model',{exact:true})).toBeEnabled({timeout:15000});
     await expect(page.getByLabel('Thinking',{exact:true})).toBeEnabled();
-    await page.getByRole('button',{name:'Edit saved shortcuts'}).click();await page.getByLabel('Quick prompts').fill('Check the result');await page.getByRole('button',{name:'Save prompts'}).click();
+    await page.locator('.quick-details > summary').click();await page.getByRole('button',{name:'Edit saved shortcuts'}).click();await page.getByLabel('Quick prompts').fill('Check the result');await page.getByRole('button',{name:'Save prompts'}).click();
     await page.getByRole('button',{name:'Check the result'}).click();await expect(page.getByRole('textbox',{name:'Prompt',exact:true})).toHaveValue('Check the result');
     expect(await page.getByRole('button',{name:'Send',exact:true}).evaluate(el=>el.getBoundingClientRect().bottom)).toBeLessThan(720);
     await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Reply exactly MOBILE_COPY_OK.');await page.getByRole('button',{name:'Send',exact:true}).click();

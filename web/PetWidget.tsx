@@ -93,7 +93,7 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
     const size=()=>({width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height});
     const viewport=()=>({width:window.visualViewport?.width??window.innerWidth,height:window.visualViewport?.height??window.innerHeight});
     const usableHeight=()=>{const nav=document.querySelector('.mobile-nav');return viewport().height-(nav&&getComputedStyle(nav).display!=='none'?nav.getBoundingClientRect().height:0)};
-    const safeAutomaticY=(y:number)=>{const composer=document.querySelector('.view-chat .composer-dock');const top=composer?.getBoundingClientRect().top;return top&&top>0?Math.min(y,Math.max(56,top-size().height-8)):y};
+    const safeAutomaticY=(y:number)=>{const composer=document.querySelector('.view-chat .composer-dock');const top=composer?.getBoundingClientRect().top;const h=size().height;return top&&top>0?Math.min(y,Math.max(Math.min(56,top-h-4),top-h-8)):y};
     const place=(x:number,y:number)=>{const a=size(),v=viewport();const next=clampPet(x,y,a.width,a.height,v.width,usableHeight());locationRef.current=next;el.style.transform=`translate3d(${next.x}px,${next.y}px,0)`};
     const v=viewport(),a=size();let saved:{x:number;y:number;side:string}|null=null;
     try{const value=JSON.parse(localStorage.getItem(positionKey)??'null');if(value&&Number.isFinite(value.x)&&Number.isFinite(value.y)&&value.x>=0&&value.x<=1&&value.y>=0&&value.y<=1&&value.side===preferences.petPosition)saved=value}catch{}
@@ -106,7 +106,10 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
         const safeTop=56;let safeBottom=usableHeight()-a.height-(mobile?215:75);
         const composer=document.querySelector('.view-chat .composer-dock');const composerTop=composer?.getBoundingClientRect().top;
         if(composerTop&&composerTop>0)safeBottom=Math.min(safeBottom,composerTop-a.height-8);
-        safeBottom=Math.max(safeTop,safeBottom);
+        // In cramped viewports the composer nearly reaches the header; keeping the
+        // pet above it matters more than the 56px top clearance.
+        const floor=composerTop&&composerTop>0?Math.min(safeTop,composerTop-a.height-4):safeTop;
+        safeBottom=Math.max(floor,safeBottom);
         const minX=anchor?Math.max(4,anchor.x-44):4,maxX=anchor?Math.min(v.width-a.width-4,anchor.x+44):Math.max(4,v.width-a.width-4);
         const minY=anchor?Math.max(4,anchor.y-32):safeTop,maxY=anchor?Math.min(usableHeight()-a.height-4,anchor.y+32):safeBottom;
         let x=locationRef.current.x+vx*dt,y=locationRef.current.y+vy*dt;

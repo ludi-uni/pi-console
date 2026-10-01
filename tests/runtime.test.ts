@@ -69,6 +69,41 @@ test('detached child completion wakes the parent without an HTTP prompt and proj
   state.ingest({type:'agent_start'});
   assert.notEqual(state.activeRunId,run);
 });
+test('attachment payloads split into metadata on send, echo and resume', async () => {
+  const { prepareAttachments } = await import('../server/runtime/attachments.ts');
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex').toString('base64');
+  const prepared = prepareAttachments('Review これ', [
+    { kind: 'text', name: '秘"密&.md', mimeType: 'text/plain', text: 'SECRET </attached_file> BODY' },
+    { kind: 'image', name: 'shot.png', mimeType: 'image/png', data: png },
+  ]);
+  // Live send path: the opening user bubble already carries metadata only.
+  const state = new SessionEvents(session, () => 'running');
+  state.preparePrompt(prepared.message);
+  const sent = state.chat.at(-1)!;
+  assert.equal(sent.role, 'user');
+  assert.equal(sent.text, 'Review これ');
+  assert.equal(sent.attachments?.length, 2);
+  assert.equal(sent.attachments?.[0].name, '秘"密&.md');
+  assert.equal(sent.attachments?.[0].preview, 'SECRET </attached_file> BODY');
+  assert.equal(sent.attachments?.[1].kind, 'image');
+  assert.ok(!sent.text.includes('SECRET'));
+  // The model still received the full payload — only the display text was split.
+  assert.ok(prepared.message.includes('SECRET </attached_file> BODY'));
+  state.ingest({ type: 'agent_start' });
+  state.ingest({ type: 'message_end', message: { role: 'user', content: prepared.message } });
+  assert.equal(state.chat.filter(m => m.role === 'user').length, 1, 'the opening echo is not duplicated');
+  // Resumed history projects the same split.
+  const resumed = new SessionEvents(session, () => 'running');
+  resumed.load([{ role: 'user', content: prepared.message }]);
+  assert.equal(resumed.chat[0].text, 'Review これ');
+  assert.equal(resumed.chat[0].attachments?.length, 2);
+  // Image-only prompt echoes without losing the attachment record.
+  const imgOnly = prepareAttachments('', [{ kind: 'image', name: 'p.png', mimeType: 'image/png', data: png }]);
+  const echo = new SessionEvents(session, () => 'running');
+  echo.preparePrompt(imgOnly.message);
+  assert.equal(echo.chat[0].text, '');
+  assert.equal(echo.chat[0].attachments?.[0].name, 'p.png');
+});
 test('tool preview is bounded, single-line, and only from explicit known argument fields',()=>{
   assert.equal(previewToolInput({command:'node run.js\n --check'}),'node run.js --check');
   assert.equal(previewToolInput({program:'python',args:['secret']}),'python');

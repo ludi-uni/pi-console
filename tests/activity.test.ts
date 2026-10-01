@@ -22,6 +22,7 @@ test('activity retains session-scoped background subagent status after parent Pi
     const complete=(await runtime.activity())[0];
     assert.equal(complete?.work.find(w=>w.label==='reviewer')?.status,'completed');
     assert.equal(complete?.completion?.status,'completed');
+    assert.equal(complete?.completion?.scope,'subagent');
   } finally {await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:200});}
 });
 
@@ -46,6 +47,27 @@ test('activity shows live foreground child and finished run with updated session
     state.ingest({type:'agent_settled'});
     const finished=(await runtime.activity())[0];
     assert.equal(finished.completion?.status,'completed');
+    assert.equal(finished.completion?.scope,'conversation');
     assert.equal(finished.work.find(w=>w.kind==='agent')?.status,'completed');
   } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('a finished detached child does not count as conversation completion while siblings still run', async () => {
+  const root=await mkdtemp(join(tmpdir(),'pi-console-mixed-'));
+  try {
+    const store=new WorkspaceStore(join(root,'workspaces.json'));const workspace=await store.add(root);
+    const file=join(root,'session.jsonl'),session={id:'session-mixed',workspaceId:workspace.id,filePath:file};
+    await writeFile(file,JSON.stringify({type:'session',id:session.id,cwd:root})+'\n');
+    const state=new SessionEvents(session,()=> 'running');const runtime=new RuntimeManager(store,root);
+    (runtime as any).active.set(session.id,{state,session});
+    const widget=(a:string,b:string)=>({type:'extension_ui_request',method:'setWidget',widgetKey:'subagent-async',widgetLines:[`PI_SUBAGENT_ASYNC_JSON:${JSON.stringify({kind:'pi-subagents.async-status-snapshot',version:1,omitted:{runs:0,byteLimitExceeded:false},runs:[{id:'run-a',kind:'subagent',label:'scout',state:a,children:[]},{id:'run-b',kind:'subagent',label:'worker',state:b,children:[]}]})}`]});
+    state.ingest(widget('complete','running'));
+    const item=(await runtime.activity())[0];
+    assert.equal(item?.running,true,'a still-running sibling keeps the session live');
+    assert.equal(item?.completion?.scope,'subagent','the finished detached child is scoped as a subagent, not the conversation');
+    state.ingest(widget('complete','complete'));
+    const done=(await runtime.activity())[0];
+    assert.equal(done?.running,false);
+    assert.equal(done?.completion?.scope,'subagent');
+  } finally {await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:200});}
 });

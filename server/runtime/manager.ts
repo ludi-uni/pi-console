@@ -40,13 +40,23 @@ export class RuntimeManager {
         .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,2);
       const work=[...liveWork,...recentWork].map(n=>({id:n.id,label:n.label,status:n.status,kind:n.kind,action:n.action}));
       if(kitRunning&&!work.some(n=>n.kind==='orchestrator'))work.unshift({id:`kit:${entry.session.id}`,label:'Orchestrator',status:'running',kind:'orchestrator',action:undefined});
-      const running=!!entry.state.activeRunId||!!kitRunning||work.some(n=>n.status==='running')||execution.nodes.some(n=>n.status==='running'&&n.kind==='tool');
-      const completed=execution.nodes.filter(n=>(['run','orchestrator'].includes(n.kind)||n.kind==='agent'&&n.sourceKind==='pi-subagents'&&!n.parentId)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&n.endedAt)
-        .sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
-      const rootCompletion=completed?.endedAt?{id:completed.id+':'+completed.endedAt,status:completed.status as 'completed'|'failed'|'cancelled'|'interrupted',at:completed.endedAt}:undefined;
-      const jobCompletion=job?.finishedAt?{id:`kit:${entry.session.id}:${job.finishedAt}`,status:job.error?'failed' as const:'completed' as const,at:job.finishedAt}:undefined;
-      const latest=[rootCompletion,jobCompletion].filter((v):v is NonNullable<typeof v>=>!!v).sort((a,b)=>b.at.localeCompare(a.at))[0];
-      const completion=latest&&Date.now()-Date.parse(latest.at)<24*60*60*1000?latest:undefined;
+      const liveStatuses=['running','waiting','blocked'];
+      const running=!!entry.state.activeRunId||!!kitRunning||work.some(n=>liveStatuses.includes(n.status))||execution.nodes.some(n=>n.status==='running'&&n.kind==='tool');
+      const terminal=(n:(typeof execution.nodes)[number])=>['completed','failed','cancelled','interrupted'].includes(n.status)&&!!n.endedAt;
+      const latestEnd=(nodes:typeof execution.nodes)=>nodes.filter(terminal).sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
+      // Conversation completion is only a finished top-level Pi run; foreground children
+      // belong to that run and their tool settles before RunCompleted. Detached background
+      // subagent roots (no parent) and kit jobs are reported separately as child/kit scope
+      // so a single finished child never looks like the whole conversation ending.
+      const runNode=latestEnd(execution.nodes.filter(n=>n.kind==='run'));
+      const detachedNode=latestEnd(execution.nodes.filter(n=>!n.parentId&&n.sourceKind==='pi-subagents'&&['agent','orchestrator'].includes(n.kind)));
+      const candidates:NonNullable<ActiveSessionSummary['completion']>[]=[
+        runNode?.endedAt?{scope:'conversation' as const,id:`${runNode.id}:${runNode.endedAt}`,status:runNode.status as 'completed'|'failed'|'cancelled'|'interrupted',at:runNode.endedAt}:undefined,
+        detachedNode?.endedAt?{scope:'subagent' as const,id:`${detachedNode.id}:${detachedNode.endedAt}`,status:detachedNode.status as 'completed'|'failed'|'cancelled'|'interrupted',at:detachedNode.endedAt}:undefined,
+        job?.finishedAt?{scope:'kit' as const,id:`kit:${entry.session.id}:${job.finishedAt}`,status:job.error?'failed' as const:'completed' as const,at:job.finishedAt}:undefined,
+      ].filter((v):v is NonNullable<typeof v>=>!!v);
+      const picked=candidates.sort((a,b)=>b.at.localeCompare(a.at))[0];
+      const completion=picked&&Date.now()-Date.parse(picked.at)<24*60*60*1000?picked:undefined;
       if(!running&&!execution.decisionCount&&!completion)continue;
       const workspace=this.workspaces.get(entry.session.workspaceId);
       const current=await readSession(entry.session.filePath,workspace);
@@ -97,14 +107,16 @@ export class RuntimeManager {
     const pending = this.starting.get(session.id); if (pending) return pending;
     const start = (async () => {
       const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot);
-      await worker.start();
       try {
+        await worker.start();
         const data = (await worker.call('get_state',{},startupStateTimeoutMs)).data;
         if (data?.sessionId !== session.id || data?.sessionFile !== session.filePath) throw new Error('resumed Pi session identity mismatch');
         const entry = this.attach(worker, session);
-        const messages = (await worker.call('get_messages')).data?.messages;
-        if (Array.isArray(messages)) entry.state.load(messages);
-        await this.startSources(entry, workspace.path);
+        try {
+          const messages = (await worker.call('get_messages')).data?.messages;
+          if (Array.isArray(messages)) entry.state.load(messages);
+          await this.startSources(entry, workspace.path);
+        } catch (error) { this.active.delete(session.id); throw error; }
         return entry;
       } catch (error) { await worker.close(); throw error; }
     })();
@@ -466,6 +478,14 @@ export class RuntimeManager {
     const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);
     if (!entry || entry.session.workspaceId !== workspaceId) throw new Error('session not open; resume it first');
     return entry.state.snapshot();
+  }
+  // Callers must take the snapshot AFTER subscribing: the replay/liveset handshake in the
+  // SSE route depends on seeing every event emitted between subscribe and snapshot.
+  async subscribedSnapshot(workspaceId: string, sessionId: string, fn: Parameters<SessionEvents['subscribe']>[0]) {
+    const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);
+    if (!entry || entry.session.workspaceId !== workspaceId) throw new Error('session not open; resume it first');
+    const unsubscribe = entry.state.subscribe(fn);
+    return { unsubscribe, snapshot: entry.state.snapshot() };
   }
   async subscribe(workspaceId: string, sessionId: string, fn: Parameters<SessionEvents['subscribe']>[0]) {
     const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);

@@ -23,6 +23,7 @@ test('language, prompt suggestions and filtered model picker', async ({page}) =>
     await page.getByRole('button', {name:'New Session'}).click();
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
     await expect(page.getByText('Suggested prompts')).toBeVisible();
+    await page.locator('.quick-details > summary').click();
     await expect(page.getByRole('button', {name:'Continue implementing'})).toBeVisible();
     await expect(page.getByLabel('Model', {exact:true})).toBeEnabled();
     await expect(page.getByLabel('Model', {exact:true}).locator('option')).toHaveCount(2);
@@ -41,6 +42,7 @@ test('language, prompt suggestions and filtered model picker', async ({page}) =>
     await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
     await page.getByRole('button',{name:'← 設定'}).click();
     await page.getByRole('button',{name:'← 戻る'}).click();
+    await page.locator('.quick-details > summary').click();
     await expect(page.getByRole('button',{name:'続きを実装して'})).toBeVisible();
   } finally {
     await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{});

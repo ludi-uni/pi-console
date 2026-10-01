@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatMessage, ChatTool, ExecutionEvent, EventType, SessionInfo, Snapshot, ProcessState, ExecutionNode } from '../../shared/types.ts';
 import { ExecutionState } from './execution-state.ts';
+import { splitPromptAttachments } from '../../shared/attachments.ts';
 import { ForegroundSubagentAdapter } from '../adapters/subagents/foreground.ts';
 import { AsyncSubagentAdapter } from '../adapters/subagents/async-widget.ts';
 
@@ -19,6 +20,13 @@ export function assistantContent(message: Raw): Pick<ChatMessage,'text'|'thinkin
   const tools = blocks.filter((block:Raw)=>block.type==='toolCall').slice(0,64).map(toolInfo);
   return { text:text(message), ...(thinking?{thinking}:{}), ...(tools.length?{tools}:{}) };
 }
+// Chat keeps the user's own text separate from attachment payloads. The full raw
+// message (wrappers included) is what Pi receives; only the display projection is
+// split here so resumed history matches the live echo exactly.
+function userContent(value: string): Pick<ChatMessage, 'text' | 'attachments'> {
+  const split = splitPromptAttachments(value);
+  return { text: split.text, ...(split.attachments.length ? { attachments: split.attachments } : {}) };
+}
 export function previewToolInput(args: unknown): string {
   if(!args||typeof args!=='object'||Array.isArray(args))return '';
   const fields=args as Record<string,unknown>;
@@ -34,6 +42,9 @@ export class SessionEvents {
   readonly chat: ChatMessage[] = [];
   readonly events: ExecutionEvent[] = [];
   seq = 0;
+  // Unique per server process + session projection; seq alone resets across restarts, so
+  // consumers key the event stream on (generation, seq) to reject stale late events.
+  readonly generation = randomUUID();
   activeRunId?: string;
   private pendingRunId?: string;
   get busy() { return !!this.activeRunId || !!this.pendingRunId; }
@@ -53,16 +64,16 @@ export class SessionEvents {
     this.emit(type,node.id,{node},{source:node.sourceKind === 'pi-subagents'?'pi-subagents':'orchestrator', sourceRef:{kind:node.sourceKind,nativeId:node.nativeId},parentId:node.parentId,status:node.status,certainty:node.correlation==='unknown'?'derived':'observed'});
   }
   subscribe(fn: (e: ExecutionEvent) => void) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  snapshot(): Snapshot { return { session: this.session, runtime: this.runtime(), activeRunId: this.activeRunId, chat: this.chat.map(m => ({...m})), events: [...this.events], execution: this.execution.snapshot(), seq: this.seq }; }
+  snapshot(): Snapshot { return { session: this.session, runtime: this.runtime(), activeRunId: this.activeRunId, chat: this.chat.map(m => ({...m})), events: [...this.events], execution: this.execution.snapshot(), seq: this.seq, generation: this.generation }; }
   load(messages: Raw[]) {
     this.chat.length = 0;
     for (const message of messages) if (message.role === 'user' || message.role === 'assistant') {
-      const content = message.role === 'assistant' ? assistantContent(message) : { text: text(message) };
-      if (content.text || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.chat.push({ id: randomUUID(), role: message.role, ...content, complete: true });
+      const content = message.role === 'assistant' ? assistantContent(message) : userContent(text(message));
+      if (content.text || 'attachments' in content || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.chat.push({ id: randomUUID(), role: message.role, ...content, complete: true });
     }
   }
   private emit(type: EventType, entityId: string, payload: Record<string, unknown> = {}, options: Partial<ExecutionEvent> = {}) {
-    const event: ExecutionEvent = { schemaVersion: 1, eventId: randomUUID(), seq: ++this.seq, timestamp: new Date().toISOString(),
+    const event: ExecutionEvent = { schemaVersion: 1, eventId: randomUUID(), seq: ++this.seq, generation: this.generation, timestamp: new Date().toISOString(),
       workspaceId: this.session.workspaceId, sessionId: this.session.id,
       runId: this.activeRunId ?? this.pendingRunId ?? 'unattributed', type, entityId, source: 'pi-rpc', sourceRef:{kind:'pi',nativeId:options.toolCallId}, certainty: 'observed', payload, ...options };
     this.execution.apply(event);
@@ -72,7 +83,7 @@ export class SessionEvents {
   preparePrompt(message?: string): string {
     if (this.activeRunId || this.pendingRunId) throw new Error('session already has an active run');
     this.pendingRunId = randomUUID(); this.failure = undefined; this.stopped = false;
-    if (message) { this.chat.push({ id: randomUUID(), role: 'user', text: message, complete: true }); this.awaitingPromptEcho = true; }
+    if (message) { this.chat.push({ id: randomUUID(), role: 'user', ...userContent(message), complete: true }); this.awaitingPromptEcho = true; }
     return this.pendingRunId;
   }
   accepted(): void { if (this.pendingRunId) this.begin(); }
@@ -140,8 +151,9 @@ export class SessionEvents {
           const queued = this.queuedPrompts.splice(index, 1)[0];
           this.emit('ExecutionNodeUpdated', queued.id, { node: { id: queued.id, kind: 'task', label: `Queued: ${body.slice(0, 80)}`, status: 'completed', correlation: 'derived-safe', sourceKind: 'pi', parentId: queued.parentId, updatedAt: new Date().toISOString() } }, { status: 'completed', parentId: queued.parentId });
         }
-        this.chat.push({ id: randomUUID(), role: 'user', text: body, complete: true });
-        this.emit('MessageCompleted', `pi-user:${this.activeRunId}:${randomUUID()}`, { text: body, role: 'user' }, { parentId: this.activeRunId, status: 'completed' });
+        this.chat.push({ id: randomUUID(), role: 'user', ...userContent(body), complete: true });
+        const user = userContent(body);
+        this.emit('MessageCompleted', `pi-user:${this.activeRunId}:${randomUUID()}`, { text: user.text, attachments: user.attachments, role: 'user' }, { parentId: this.activeRunId, status: 'completed' });
       }
       this.awaitingPromptEcho = false;
     }

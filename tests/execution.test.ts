@@ -75,7 +75,7 @@ test('failed child fixture remains a failed observed node, without invented chil
 
 test('out-of-order source updates, duplicate terminal events, missing parent remain safe',()=>{
   const store=new ExecutionState();const node:ExecutionNode={id:'orphan',kind:'agent',label:'child',status:'completed',parentId:'missing',correlation:'unknown',sourceKind:'pi-subagents',updatedAt:'2026-01-02T00:00:00Z'};
-  const event=(n:ExecutionNode,eventId:string)=>({schemaVersion:1 as const,eventId,seq:1,timestamp:n.updatedAt,workspaceId:'w',sessionId:'s',runId:'r',type:'ExecutionNodeUpdated' as const,entityId:n.id,source:'pi-subagents' as const,certainty:'observed' as const,payload:{node:n}});
+  const event=(n:ExecutionNode,eventId:string)=>({schemaVersion:1 as const,eventId,seq:1,generation:'g1',timestamp:n.updatedAt,workspaceId:'w',sessionId:'s',runId:'r',type:'ExecutionNodeUpdated' as const,entityId:n.id,source:'pi-subagents' as const,certainty:'observed' as const,payload:{node:n}});
   assert.equal(store.apply(event(node,'e1')),true);assert.equal(store.apply(event(node,'e1')),false);
   assert.equal(store.apply(event({...node,status:'running',updatedAt:'2026-01-01T00:00:00Z'},'e2')),false);
   assert.equal(store.apply(event({...node,status:'running',updatedAt:'2026-01-03T00:00:00Z'},'e3')),false);

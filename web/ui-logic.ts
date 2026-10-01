@@ -1,4 +1,4 @@
-import type { SessionInfo, Workspace, ExecutionEvent, ExecutionStateSnapshot } from '../shared/types.ts';
+import type { SessionInfo, Workspace, ExecutionEvent, ExecutionStateSnapshot, Snapshot } from '../shared/types.ts';
 /** Only a fresh issue appears as a transient toast; history remains in Execution. */
 export const issueToastDurationMs=7000;
 export function recentIssue(events: ExecutionEvent[], dismissed: readonly string[], now = Date.now(), retained?:{eventId:string;until:number}): ExecutionEvent | undefined {
@@ -37,3 +37,8 @@ export function visibleExecutionRows(state:ExecutionStateSnapshot|undefined,open
   return visible;
 }
 export function validQuickPrompts(values:unknown):values is string[] {return Array.isArray(values)&&values.length<=8&&values.every(v=>typeof v==='string'&&!!v.trim()&&v.length<=200);}
+
+/** True while an async response still belongs to the screen that asked for it. All session-scoped replies (state, options, orchestrator status) are dropped once the workspace:session scope changed, so a slow A response cannot overwrite B's view. */
+export function sameScope(scope:string,captured:string):boolean{return scope===captured;}
+/** Adopt a fetched snapshot only when it is not older than the displayed one. A different generation (server restart) always establishes a new baseline; within one generation a lower seq is stale. */
+export function acceptSnapshot(current:Pick<Snapshot,'generation'|'seq'>|undefined,next:Pick<Snapshot,'generation'|'seq'>,allowNewGeneration=false):boolean{if(!current)return true;return current.generation===next.generation?next.seq>=current.seq:allowNewGeneration}

@@ -18,7 +18,11 @@ const ID = /^[a-z][a-z0-9-]{0,63}$/;
 const THINKING = new Set(['off','minimal','low','medium','high','xhigh','max']);
 const SECRET = /(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN)/;
 const CAP_SCOPES: Record<string,Scope> = { orchestration:'planning', 'cheap-code':'code', 'strong-code':'code', 'deep-review':'review', 'vision-reasoning':'vision', browser:'browser' };
-const SCOPE_ROLES: Record<Scope,string[]> = { planning:['orchestrator','design-planner','scout'], code:['coder','tester'], review:['reviewer'], vision:['visual','scout','reviewer','design-planner'], browser:['browser'] };
+// A model's scopes grant agent-role eligibility; `vision` on the model is the separate
+// hardware fact that it accepts image input. Image review therefore needs BOTH the
+// vision scope (capability routing) and review scope (the reviewer's role), while an
+// image-taking scout/planner needs vision scope plus its planning role.
+const SCOPE_ROLES: Record<Scope,string[]> = { planning:['orchestrator','design-planner','scout'], code:['coder','tester'], review:['reviewer'], vision:['visual'], browser:['browser'] };
 export const backendName = (id:string) => `user-${id}`;
 export const overlayPath = () => join(consoleDataDir(), 'orchestrator-models.json');
 export const capabilityScope = (name:string, cap:any):Scope|undefined => CAP_SCOPES[name] ?? (cap.requires?.vision === true ? 'vision' : cap.scope);
@@ -114,10 +118,15 @@ export function applyOverlay(routing:any, registry:any, overlay:Overlay) {
   for (const [name,cap] of Object.entries(overlay.capabilities ?? {})) allCaps[name] = {...routing.capabilities[name],...cap};
   const capabilities = Object.fromEntries(Object.entries(allCaps).map(([name,cap]:[string,any]) => {
     const scope = capabilityScope(name,cap);
+    // A capability that requires image input needs ALL of: the capability's scope
+    // permission, the vision checkbox permission, and the model's image-input flag.
+    // A review-scoped model with vision:true but no vision scope must NOT run image
+    // review — the vision checkbox and the image-input fact are separate gates.
+    const needsVision = scope === 'vision' || cap.requires?.vision === true;
     const chain = [cap.primary,...(cap.fallback ?? [])].filter(b => {
       const m = userByBackend.get(b);
-      if (!m) return !b.startsWith('user-') && Object.hasOwn(backends,b);
-      return !!scope && m.scopes.includes(scope) && (!(scope === 'vision' || cap.requires?.vision) || m.vision);
+      if (!m) return !b.startsWith('user-') && Object.hasOwn(backends,b); // legacy kit backends stay unfiltered
+      return !!scope && m.scopes.includes(scope) && (!needsVision || (m.vision && m.scopes.includes('vision')));
     });
     return [name,{...cap,primary:chain[0] ?? denied,fallback:chain.slice(1)}];
   }));
@@ -125,11 +134,15 @@ export function applyOverlay(routing:any, registry:any, overlay:Overlay) {
 }
 
 // A task may override its capability while keeping its assigned agent. Enforce the
-// agent's permitted role too, so e.g. a browser cannot borrow a code-only model.
+// agent's permitted role too, so e.g. a browser cannot borrow a code-only model. A role
+// that takes image input (visual/reviewer/scout/design-planner) additionally requires
+// the model's vision flag when the routed capability demands image input.
 export function routingForRole(routing:any, registry:any, role:string) {
   if (!Object.keys(registry?.backends ?? {}).some(b=>b.startsWith('user-'))) return routing;
+  const imageRole = ['visual','reviewer','scout','design-planner'].includes(role);
   const capabilities = Object.fromEntries(Object.entries(routing.capabilities).map(([name,cap]:[string,any])=>{
-    const chain = [cap.primary,...(cap.fallback ?? [])].filter(b=>!b.startsWith('user-') || registry.backends[b]?.roles?.includes(role));
+    const needsVision = capabilityScope(name,cap) === 'vision' || cap.requires?.vision === true;
+    const chain = [cap.primary,...(cap.fallback ?? [])].filter(b=>!b.startsWith('user-') || (registry.backends[b]?.roles?.includes(role) && (!needsVision || !imageRole || registry.backends[b]?.vision === true)));
     return [name,{...cap,primary:chain[0]??'console-denied',fallback:chain.slice(1)}];
   }));
   return {...routing,capabilities};

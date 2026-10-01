@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import type { SessionInfo, Workspace } from '../../shared/types.ts';
+import { splitPromptAttachments } from '../../shared/attachments.ts';
 
 export function pathKey(path: string): string { return resolve(path).replace(/[\\/]+$/, '').toLowerCase(); }
 export class WorkspaceStore {
@@ -62,7 +63,10 @@ export async function readSession(path: string, workspace: Workspace): Promise<S
     const tailSize=Math.min(65536,stat.size);const tail=Buffer.alloc(tailSize);await handle.read(tail,0,tailSize,stat.size-tailSize);
     let name=typeof header.name==='string'?header.name:undefined;
     for(const line of tail.toString('utf8').split('\n')) { try { const entry=JSON.parse(line); if(entry.type==='session_info') name=typeof entry.name==='string'?entry.name:undefined; } catch {} }
-    const fallback=firstPrompt.replace(/\s+/g,' ').trim().slice(0,72);
+    // Prompts may embed attachment payloads; the title uses the typed text plus
+    // attachment names, never file bodies.
+    const split=splitPromptAttachments(firstPrompt);
+    const fallback=(split.text+(split.attachments.length?` 📎 ${split.attachments.map(a=>a.name).join(', ')}`:'')).replace(/\s+/g,' ').trim().slice(0,72);
     return { id: header.id, workspaceId: workspace.id, filePath: path, name:name||fallback||undefined, updatedAt: stat.mtime.toISOString() };
   } catch { return; } finally { await handle?.close(); }
 }
