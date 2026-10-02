@@ -67,6 +67,7 @@ test('installed local Pi package exposes /pi-console and connects a real isolate
     const state = await (await fetch(`${base}/api/state?workspaceId=${workspace.id}&sessionId=${session.id}`)).json();
     assert.equal(state.runtime, 'running');
     assert.equal(state.session.id, session.id);
+    assert.deepEqual(state.chat, [], 'internal chunked-history command must not become a chat prompt or model call');
     await post('/api/close', { workspaceId: workspace.id, sessionId: session.id });
     await call('stop', 'prompt', { message: '/pi-console stop' });
     let stopped = false; const stopBy = Date.now() + 8000;
@@ -85,9 +86,17 @@ test('installed local Pi package exposes /pi-console and connects a real isolate
     try { await Promise.race([once(rpc, 'close'), new Promise((_, reject) => { exitTimer = setTimeout(() => reject(new Error('host Pi did not exit')), 8000); })]); }
     finally { clearTimeout(exitTimer); }
     rpc = undefined;
+    // 0.4.3: the managed detached server intentionally survives the host Pi exit.
+    const survived = await fetch(nextBase + '/', { signal: AbortSignal.timeout(4000) });
+    assert.equal(survived.status, 200, 'managed server should survive host Pi exit');
+    // Clean it up through the shared manager, as a later invocation would.
+    const { stopManagedServer } = await import('../package/server-manager.mjs');
+    const stopResult = await stopManagedServer({ env });
+    assert.equal(stopResult.status, 'stopped', JSON.stringify(stopResult));
     await assert.rejects(fetch(nextBase + '/', { signal: AbortSignal.timeout(4000) }));
   } finally {
     if (rpc && rpc.exitCode === null) { rpc.kill(); await once(rpc, 'close').catch(() => {}); }
+    try { const { stopManagedServer } = await import('../package/server-manager.mjs'); await stopManagedServer({ env }); } catch {}
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
   }
 });

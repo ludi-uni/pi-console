@@ -30,7 +30,7 @@ test('real Pi: create, stream, powershell progress, settle, resume, stop and shu
       {kind:'text',name:'note.txt',mimeType:'text/plain',text:'Attachment marker: FILE_OK'},
       {kind:'image',name:'icon.png',mimeType:'image/png',data:image},
     ]);
-    const messages=(await entry.worker.call('get_messages')).data?.messages;
+    const messages=await entry.worker.getMessages();
     assert.ok(messages.some((m:any)=>m.role==='user'&&m.content.some((c:any)=>c.type==='image'&&c.mimeType==='image/png')),'Pi did not receive ImageContent');
     assert.ok(messages.some((m:any)=>m.role==='user'&&m.content.some((c:any)=>c.type==='text'&&c.text.includes('FILE_OK'))),'Pi did not receive text attachment');
     await waitFor(() => entry.state.events.some(e => e.type === 'RunCompleted'));

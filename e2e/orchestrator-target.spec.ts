@@ -64,7 +64,7 @@ test('long kit request stays collapsed while verified current tasks remain reada
   await page.route('**/api/resume',route=>{const body=route.request().postDataJSON();void route.fulfill({json:{snapshot:{session:{id:body.sessionId,workspaceId:body.workspaceId,filePath:'test.jsonl'},runtime:'running',chat:[],events:[],execution:{nodes,rows:nodes.map(n=>({node:n,depth:n.parentId?1:0,unattached:false})),roots:[old.id,rootNode.id],unattached:[],activeCount:3,failedCount:0,decisionCount:0},seq:0}}})});
   try{
     await page.setViewportSize({width:1280,height:800});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Open Workspace'}).click();
+    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();

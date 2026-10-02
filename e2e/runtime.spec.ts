@@ -8,7 +8,7 @@ test('desktop/mobile execution tree observes real Pi tool and canonical history'
   try {
     await page.goto('/');
     await page.getByLabel('Workspace path').fill(cwd);
-    await page.getByRole('button',{name:'Open Workspace'}).click();
+    await page.getByRole('button',{name:'Add & open'}).click();
     await page.getByRole('button',{name:'New Session'}).click();
     await expect(page.getByLabel('runtime state')).toHaveText('running',{timeout:30000});
     await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Use powershell to run Write-Output PHASE1_BROWSER_OK; Start-Sleep -Seconds 3. Then reply PHASE1_BROWSER_OK.');

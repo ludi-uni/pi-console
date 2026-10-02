@@ -2,11 +2,14 @@ import { PiProcess } from '../adapters/pi/process.ts';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { access, lstat, realpath, stat } from 'node:fs/promises';
 import { SessionEvents } from './events.ts';
+import { historyReplay } from './history-hydration.ts';
 import { kitRoot, OrchestratorSource, readBoundOrchestrator } from '../adapters/orchestrator/source.ts';
 import { orchestratorKit, startKitRun, pendingKitDecisions, answerKitDecision, resumeKitRun } from '../adapters/orchestrator/start.ts';
 import { listSessions, readSession, piSessionDir, WorkspaceStore } from './workspaces.ts';
 import type { SessionInfo, Workspace, SessionOptions, ActiveSessionSummary } from '../../shared/types.ts';
 import { prepareAttachments } from './attachments.ts';
+import type { QueuedItem } from '../../shared/types.ts';
+import { QueueStore } from './queue-store.ts';
 import { ReportRecoveryStore, type ReportRecovery } from './report-recovery.ts';
 
 type Active = { worker: PiProcess; state: SessionEvents; session: SessionInfo; source?: OrchestratorSource };
@@ -22,7 +25,8 @@ export class RuntimeManager {
   private answeringKit = new Set<string>();
   private kitRuns = new Map<string, { workspaceId: string; running: boolean; preparing?: boolean; request: string; startedAt: string; runId?: string; error?: string; finishedAt?: string; progress?: string[]; report?: string; reporting?: boolean; reportedToPi?: boolean; reportError?: string; reportHandled?: boolean; needsInput?: boolean; reportDispatchAttempted?: boolean }>();
   private readonly reportStore?:ReportRecoveryStore;
-  constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir)}
+  private readonly queueStore:QueueStore;
+  constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string, queueDir?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir);this.queueStore=new QueueStore(queueDir)}
   get sessionRoot(){return this.sessionsRoot}
   async sessions(workspaceId: string) {
     const files = await listSessions(this.workspaces.get(workspaceId), this.sessionsRoot);
@@ -80,15 +84,19 @@ export class RuntimeManager {
       if (!session || session.id !== data.sessionId) throw new Error('Pi session header identity/cwd mismatch');
       const existing = this.active.get(session.id); if (existing) throw new Error('session already active');
       const entry = this.attach(worker, session);
+      // A queue file can exist for a recycled-and-recreated id; restore it held too.
+      await entry.state.loadQueue(await this.queueStore.load(session.id));
       await this.startSources(entry, workspace.path);
       return entry;
     } catch (error) { await worker.close(); throw error; }
   }
   private attach(worker: PiProcess, session: SessionInfo): Active {
     const state = new SessionEvents(session, () => worker.state);
+    state.setQueueStore(this.queueStore);
     const entry: Active = { worker, state, session };
+    this.drainSessionQueue(entry);
     worker.onRecord = record => state.ingest(record);
-    worker.onState = (status, reason) => { if (status === 'failed') { state.interrupted(reason ?? 'Pi process failed'); this.active.delete(session.id); entry.source?.stop(); this.failed.set(session.id, entry); } };
+    worker.onState = (status, reason) => { if (status === 'failed') { state.interrupted(reason ?? 'Pi process failed'); (entry as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true; state.cancelQueueDrain(); this.active.delete(session.id); entry.source?.stop(); this.failed.set(session.id, entry); } };
     this.failed.delete(session.id); this.active.set(session.id, entry);
     return entry;
   }
@@ -100,11 +108,15 @@ export class RuntimeManager {
   async open(workspaceId: string, sessionId: string): Promise<Active> {
     if(this.retiring.has(sessionId))throw new Error('session is being recycled');
     const workspace = this.workspaces.get(workspaceId);
+    // Check `starting` FIRST: attach() registers the entry in `active` before history
+    // and the durable queue finish loading. A second caller must await full hydration
+    // — otherwise it could mutate (e.g. enqueue into) a queue loadQueue is about to
+    // overwrite.
+    const pending = this.starting.get(sessionId); if (pending) return pending;
     const existing = this.active.get(sessionId);
     if (existing) { if (existing.session.workspaceId !== workspaceId) throw new Error('session belongs to another workspace'); return existing; }
     const session = (await listSessions(workspace, this.sessionsRoot)).find(s => s.id === sessionId);
     if (!session) throw new Error('session not found in workspace');
-    const pending = this.starting.get(session.id); if (pending) return pending;
     const start = (async () => {
       const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot);
       try {
@@ -113,10 +125,30 @@ export class RuntimeManager {
         if (data?.sessionId !== session.id || data?.sessionFile !== session.filePath) throw new Error('resumed Pi session identity mismatch');
         const entry = this.attach(worker, session);
         try {
-          const messages = (await worker.call('get_messages')).data?.messages;
-          if (Array.isArray(messages)) entry.state.load(messages);
+          // Buffer during hydration, then reconcile finalized messages at the snapshot
+          // stdout boundary. A completion before that boundary can be in BOTH the
+          // baseline and the buffer; later events and incomplete streams must survive.
+          const buffered: Parameters<typeof entry.state.ingest>[0][] = [];
+          const originalIngest = worker.onRecord;
+          worker.onRecord = record => buffered.push(record);
+          let boundary = 0;
+          let messages: Record<string, any>[] = [];
+          try {
+            messages = await worker.getMessages(60000, () => { boundary = buffered.length; });
+            entry.state.load(messages);
+          } finally {
+            worker.onRecord = originalIngest;
+          }
+          for (const record of historyReplay(messages, buffered, boundary)) entry.state.ingest(record);
+          // Restore the durable pending queue after history load: 'dispatching' items
+          // demote to held (uncertain delivery — never auto-replayed) and a held/failed
+          // item pauses the queue until the operator resumes it.
+          // Fail closed: a corrupt/unreadable persisted queue rejects open() rather
+          // than silently dropping user prompts (loadQueue also demotes everything
+          // to held so nothing auto-drains before operator resume).
+          await entry.state.loadQueue(await this.queueStore.load(session.id));
           await this.startSources(entry, workspace.path);
-        } catch (error) { this.active.delete(session.id); throw error; }
+        } catch (error) { (entry as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true; entry.state.cancelQueueDrain(); this.active.delete(session.id); throw error; }
         return entry;
       } catch (error) { await worker.close(); throw error; }
     })();
@@ -260,7 +292,7 @@ export class RuntimeManager {
     }finally{this.answeringKit.delete(sessionId)}
   }
   private async reportAlreadyInPi(entry:Active,report:string):Promise<boolean>{
-    const messages=(await entry.worker.call('get_messages')).data?.messages;
+    const messages=await entry.worker.getMessages();
     if(!Array.isArray(messages))throw new Error('Pi did not return session messages; report delivery cannot be checked');
     const expected=kitReportPrompt(report);
     let index=-1;
@@ -295,7 +327,7 @@ export class RuntimeManager {
       job.running=true;job.reporting=true;job.reportError=undefined;
       void (async()=>{
         try{await this.deliverKitReport(entry,job)}
-        finally{job.running=false;job.reporting=false;job.finishedAt=new Date().toISOString()}
+        finally{job.running=false;job.reporting=false;job.finishedAt=new Date().toISOString();entry.state.wakeQueueDrain()}
       })();
       return {runId,retrying:true};
     }finally{this.answeringKit.delete(sessionId)}
@@ -329,7 +361,7 @@ export class RuntimeManager {
           await this.deliverKitReport(entry,job);
         }
       }catch(error){job.error=(error as Error).message}
-      finally{job.running=false;job.finishedAt=new Date().toISOString()}
+      finally{job.running=false;job.finishedAt=new Date().toISOString();entry.state.wakeQueueDrain()}
     })();
   }
   async inspectSubagent(workspaceId: string, sessionId: string, nodeId: unknown) {
@@ -375,7 +407,7 @@ export class RuntimeManager {
     const message = kitReportPrompt(report);
     const previousMessages = state.chat.length;
     const originalName = String((await worker.call('get_state')).data?.sessionName ?? session.name ?? '');
-    const persistedBefore = (await worker.call('get_messages')).data?.messages;
+    const persistedBefore = await worker.getMessages();
     if (!Array.isArray(persistedBefore)) throw new Error('Pi did not return session messages before the orchestrator report');
     const runId = state.preparePrompt(message);
     // set_session_name rejects empty names; restore a neutral label when the session was unnamed.
@@ -399,7 +431,7 @@ export class RuntimeManager {
       // Enforcement is not prompt-only: the extension must have suppressed every tool call.
       // Cross-check the authoritative persisted session so a UI-only projection cannot hide a
       // tool call that actually ran.
-      const messages = (await worker.call('get_messages')).data?.messages;
+      const messages = await worker.getMessages();
       if (!Array.isArray(messages) || messages.length <= persistedBefore.length) throw new Error('Pi did not persist the orchestrator report response');
       const recent = messages.slice(persistedBefore.length);
       if (recent.some((m: any) => m?.role === 'toolResult' || m?.role === 'assistant' && Array.isArray(m.content) && m.content.some((b: any) => b?.type === 'toolCall')))
@@ -443,7 +475,7 @@ export class RuntimeManager {
         if(needsInput)return;
         await this.deliverKitReport(entry,job);
       } catch (error) { job.error = (error as Error).message; }
-      finally { job.preparing = false; job.running = false; job.finishedAt = new Date().toISOString(); }
+      finally { job.preparing = false; job.running = false; job.finishedAt = new Date().toISOString(); entry.state.wakeQueueDrain(); }
     })();
     return { job };
   }
@@ -456,19 +488,91 @@ export class RuntimeManager {
     if(this.retiring.has(sessionId))throw new Error('session is being recycled');
     if (state.busy) {
       if (!mode) throw new Error('select steer or follow-up while Pi is running');
-      await worker.call(mode === 'steer' ? 'steer' : 'follow_up', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) });
-      state.queuePrompt(prepared.message);
+      if (mode === 'followUp') {
+        // Console-owned durable pre-dispatch queue: raw text + original attachments
+        // persist BEFORE the HTTP ack; wrappers/images regenerate at dispatch.
+        await state.enqueueFollowUp(message, attachments);
+        return 'queued';
+      }
+      // Steer is applied to the in-flight run immediately; Pi offers no recall, so it
+      // is intentionally NOT part of the editable queue.
+      await worker.call('steer', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) });
+      state.queuePrompt(prepared.message, 'steer');
       return state.activeRunId ?? 'queued';
     }
+    // An idle prompt must not bypass queued follow-ups: enqueue anything pending
+    // first and refuse, preserving FIFO and preventing a surprise ordering change.
+    if (state.hasPendingQueue()) throw new Error('this session has queued follow-ups; resume or remove them before sending a new prompt');
     const id = state.preparePrompt(prepared.message);
     try { await worker.call('prompt', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) }); state.accepted(); return id; }
     catch (error) { state.rejected((error as Error).message); throw error; }
+  }
+  // Drains a session's console-owned follow-up queue. Each iteration claims the head
+  // only when the run is settled, sends the preserved prepared message (wrappers and
+  // images untouched), then waits for that run to settle before the next item. A
+  // refused dispatch leaves the item held — no automatic resend. The loop is bound to
+  // the entry: closeSession marks the entry draining-stopped so no loop outlives its
+  // worker and reopening never starts a second drainer.
+  private drainSessionQueue(entry: Active & { queueDrainStopped?: boolean }): void {
+    void (async () => {
+      for (;;) {
+        if (entry.queueDrainStopped) return;
+        // The console queue never dispatches while the orchestrator owns or pauses the
+        // session, the session is being recycled, or the queue is held (uncertain
+        // delivery/stop/restart) — the item stays pending until that resolves or the
+        // operator resumes it explicitly. Claiming is synchronous inside
+        // beginQueueDispatch, so a CAS edit can never slip in after the claim.
+        const kitJob = this.kitRuns.get(entry.session.id);
+        const kitBusy = !!kitJob && (kitJob.running || !!kitJob.needsInput || !!kitJob.reportError);
+        const item = kitBusy || this.retiring.has(entry.session.id) ? undefined : await entry.state.beginQueueDispatch();
+        if (entry.queueDrainStopped) return;
+        if (!item) { await entry.state.waitQueueDrain(); continue; }
+        try {
+          const prepared = prepareAttachments(item.text, item.attachments);
+          const runId = entry.state.preparePrompt(prepared.message);
+          let settle: (completed: boolean) => void = () => {};
+          const finished = new Promise<boolean>(resolve => { settle = resolve; });
+          const unsubscribe = entry.state.subscribe(event => {
+            if (event.entityId === runId && (event.type === 'RunCompleted' || event.type === 'RunFailed')) settle(event.type === 'RunCompleted');
+          });
+          const timer = setTimeout(() => settle(false), 240000);
+          timer.unref();
+          try {
+            await entry.worker.call('prompt', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) });
+            entry.state.accepted();
+            const completed = await finished;
+            // Only a completed run confirms delivery. A refused call, a failed/
+            // cancelled/interrupted run or the settle timeout all leave the outcome
+            // uncertain → hold the item and pause the queue; never auto-resend.
+            await entry.state.finishQueueDispatch(item.id, completed, completed ? undefined : 'the queued prompt was delivered to Pi but its run did not complete; delivery effect is unconfirmed');
+          } finally { clearTimeout(timer); unsubscribe(); }
+        } catch (error) {
+          await entry.state.finishQueueDispatch(item.id, false, (error as Error).message).catch(() => {});
+        }
+      }
+    })().catch(() => {});
+  }
+  async editQueuedPrompt(workspaceId: string, sessionId: string, id: unknown, revision: unknown, text: unknown): Promise<QueuedItem> {
+    const entry = await this.open(workspaceId, sessionId);
+    return entry.state.editQueueItem(String(id ?? ''), revision, text) as Promise<QueuedItem>;
+  }
+  async removeQueuedPrompt(workspaceId: string, sessionId: string, id: unknown): Promise<void> {
+    const entry = await this.open(workspaceId, sessionId);
+    await entry.state.removeQueueItem(String(id ?? ''));
+  }
+  async resumeQueuedPrompts(workspaceId: string, sessionId: string): Promise<QueuedItem[]> {
+    const { state } = await this.open(workspaceId, sessionId);
+    await state.resumeQueue();
+    return state.snapshot().queue ?? [];
   }
   async stop(workspaceId: string, sessionId: string): Promise<void> {
     const job=this.kitRuns.get(sessionId);
     if(job?.workspaceId===workspaceId&&job.running&&job.reporting)throw new Error('cannot stop while the orchestrator report is being saved to Pi');
     const { worker, state } = await this.open(workspaceId, sessionId);
     if (!state.activeRunId) throw new Error('no active run');
+    // Pause the pending queue BEFORE the awaited clear_queue: a settle arriving in
+    // between would otherwise let the drain loop claim and send a queued item.
+    await state.pauseQueue();
     await worker.call('clear_queue');
     state.markStop();
     await worker.call('abort', {}, 60000);
@@ -497,7 +601,9 @@ export class RuntimeManager {
     const entry = this.active.get(sessionId);
     if (!entry || entry.session.workspaceId !== workspaceId) throw new Error('session worker not found');
     if (entry.state.activeRunId) throw new Error('cannot close worker during active run');
-    entry.source?.stop(); await entry.worker.close(); this.active.delete(sessionId); this.failed.delete(sessionId);
+    if (entry.state.hasPendingQueue()) throw new Error('session has queued follow-ups; remove or resume them before closing');
+    entry.source?.stop(); (entry as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true; entry.state.cancelQueueDrain();
+    await entry.worker.close(); this.active.delete(sessionId); this.failed.delete(sessionId);
   }
   async recycleSession(workspaceId:string,sessionId:string,move:(path:string)=>Promise<void>,cutoff?:number):Promise<void> {
     const workspace=this.workspaces.get(workspaceId);
@@ -516,6 +622,7 @@ export class RuntimeManager {
       if(cutoff!==undefined&&entry)throw new Error('session is open in Pi Console');
       const execution=entry?.state.execution.snapshot();
       if(entry?.state.activeRunId||execution?.decisionCount||execution?.nodes.some(n=>n.status==='running'||n.status==='waiting'))throw new Error('session is active or awaiting input');
+      if(entry?.state.hasPendingQueue()||!entry&&await this.queueStore.exists(sessionId))throw new Error('session has queued follow-ups; open it and remove or resume them before recycling');
       const info=await stat(file);
       if(cutoff!==undefined&&info.mtimeMs>=cutoff)throw new Error('session was updated after retention cutoff');
       if(entry){entry.source?.stop();if(this.active.has(sessionId))await entry.worker.close();this.active.delete(sessionId);this.failed.delete(sessionId)}
@@ -533,6 +640,9 @@ export class RuntimeManager {
     if ([...this.kitRuns.values()].some(job => job.workspaceId === workspaceId && job.running)) throw new Error('cannot remove workspace while its orchestrator is running');
     if (entries.some(e => e.state.activeRunId || e.state.execution.snapshot().decisionCount || e.state.execution.snapshot().nodes.some(n => n.status === 'running' || n.status === 'waiting')))
       throw new Error('cannot remove workspace while a session is active or awaiting input');
+    if (entries.some(e => e.state.hasPendingQueue())) throw new Error('cannot remove workspace while a session has queued follow-ups; remove or resume them first');
+    const unopenedQueued = (await listSessions(this.workspaces.get(workspaceId), this.sessionsRoot)).filter(s => !entries.some(e => e.session.id === s.id));
+    for (const s of unopenedQueued) if (await this.queueStore.exists(s.id)) throw new Error('cannot remove workspace while a session has queued follow-ups; remove or resume them first');
     for (const entry of entries) {
       entry.source?.stop();
       if (this.active.has(entry.session.id)) await entry.worker.close();
@@ -540,6 +650,13 @@ export class RuntimeManager {
     }
     await this.workspaces.remove(workspaceId);
   }
-  async shutdown() { await Promise.allSettled([...this.active.values()].map(x => { x.source?.stop(); return x.worker.close(); })); for (const x of this.failed.values()) x.source?.stop(); this.active.clear(); this.failed.clear(); }
+  async shutdown() {
+    for (const x of [...this.active.values(), ...this.failed.values()]) {
+      (x as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true;
+      x.state.cancelQueueDrain(); x.source?.stop();
+    }
+    await Promise.allSettled([...this.active.values()].map(x => x.worker.close()));
+    this.active.clear(); this.failed.clear();
+  }
   activeWorker(sessionId: string) { return this.active.get(sessionId)?.worker; }
 }

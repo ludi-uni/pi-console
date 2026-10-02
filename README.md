@@ -47,6 +47,8 @@ Pi が表示した URL（例：`http://127.0.0.1:31717`）を**同じ PC のブ�
 
 Pi からの起動と Windows スタートアップは、通常 `~/.pi/agent/pi-console/.env` を明示的に読み込みます。Cloudflare 用の設定を npm パッケージの外に保持できます。配置・優先順位・再起動方法は [起動時の `.env` 設定](docs/operations.ja.md#pi-からの起動と-windows-スタートアップの-env)をご覧ください。
 
+サーバーは独立したバックグラウンドプロセスです。Pi を終了・`/reload` しても動き続け、`/pi-console status|stop|restart`（または任意のディレクトリーから `scripts\pi-console.ps1 <コマンド>`／`node package/pi-console.mjs <コマンド>`）で同じサーバーを管理します。`restart` は進行中の Web セッションを中断します。旧版で起動されたサーバーは報告のみで、自動的には停止しません。
+
 ### 3. 最初のセッションを作る
 
 1. **Workspaces** で PC 上の作業フォルダーを選ぶか、**Add a workspace** から登録します。
@@ -67,7 +69,7 @@ Pi からの起動と Windows スタートアップは、通常 `~/.pi/agent/pi-
 | --- | --- |
 | `pi` コマンドが見つからない | Pi のインストールと PowerShell の再起動を確認します。 |
 | `/pi-console` が使えない | Pi で `/reload` を実行するか Pi を再起動し、`pi list` で登録を確認します。 |
-| ブラウザーから接続できない | Pi を終了せず、Pi に表示された URL を同じ PC で開きます。 |
+| ブラウザーから接続できない | `/pi-console status` でサーバーの状態とポートを確認し、表示された URL を同じ PC で開きます。 |
 | セッションの起動が失敗する | 画面のエラーを確認し、**New Session** を再試行します。繰り返す場合は [運用・開発ガイド](docs/operations.ja.md)を参照してください。 |
 
 ソースからの導入、単独の `npm start`、保存先や起動設定は [運用・開発ガイド](docs/operations.ja.md)にまとめています。

@@ -26,9 +26,8 @@ test('retry saves only the missing Pi report and never sends a possibly delivere
     const recovery=new ReportRecoveryStore(join(root,'data','report-recovery'));
     const state=new SessionEvents(session,()=> 'running'),runtime=new RuntimeManager(store,root,join(root,'data','report-recovery'));
     const messages:any[]=[{role:'assistant',content:[{type:'text',text:'Earlier reply'}]}];let prompts=0;
-    const worker={call:async(type:string,args:any)=>{
+    const worker={getMessages:async()=>[...messages],call:async(type:string,args:any)=>{
       if(type==='get_state')return {data:{sessionName:'Task'}};
-      if(type==='get_messages')return {data:{messages:[...messages]}};
       if(type==='prompt'){
         assert.equal((await recovery.read(session.id))?.reportDispatchAttempted,true,'dispatch must be journaled before the Pi prompt');
         prompts++;messages.push({role:'user',content:args.message});

@@ -12,6 +12,8 @@ test('kit questions are bound to the exact session/run and resume only after all
   const root=await mkdtemp(join(tmpdir(),'pi-console-kit-decisions-'));
   const kit=join(root,'kit'),workspacePath=join(root,'workspace');
   const oldKit=process.env.PI_CONSOLE_KIT_ROOT,oldStore=process.env.PI_CONSOLE_ORCHESTRATOR_STORE;
+  const oldData=process.env.PI_CONSOLE_DATA_DIR;
+  process.env.PI_CONSOLE_DATA_DIR=join(root,'console-data');
   try{
     await mkdir(workspacePath);for(const dir of ['lib/orchestrator','adapters/pi/lib','.orchestration/activity/clients'])await mkdir(join(kit,dir),{recursive:true});
     const resumed=join(root,'resumed.txt');
@@ -75,6 +77,7 @@ export const formatReport=()=>'';`);
     assert.equal((await runtime.kitDecisions(workspace.id,session.id)).canResume,false);
     await assert.rejects(runtime.retryOrchestrator(workspace.id,session.id,'run-one'),/no answered decision awaiting a resumable retry/);
   }finally{
+    if(oldData===undefined)delete process.env.PI_CONSOLE_DATA_DIR;else process.env.PI_CONSOLE_DATA_DIR=oldData;
     if(oldKit===undefined)delete process.env.PI_CONSOLE_KIT_ROOT;else process.env.PI_CONSOLE_KIT_ROOT=oldKit;
     if(oldStore===undefined)delete process.env.PI_CONSOLE_ORCHESTRATOR_STORE;else process.env.PI_CONSOLE_ORCHESTRATOR_STORE=oldStore;
     await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});

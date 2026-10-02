@@ -36,6 +36,13 @@ export function consoleExtension(): string {
   return file;
 }
 
+// Chunked history transport: the worker-side extension serializes the projected session
+// messages and emits them as correlated single-line setWidget records, each safely under
+// both the 64 KiB widget line bound and the 8 MiB JSONL parser limit. Reassembled here.
+const HISTORY_PREFIX = 'PI_CONSOLE_HISTORY_JSON:';
+const HISTORY_CHUNK_MAX = 65536;      // widgetLines entry bound
+const HISTORY_TOTAL_MAX = 192 * 1024 * 1024; // absolute base64 payload bound
+
 export class PiProcess {
   state: ProcessState = 'stopped';
   private child?: ChildProcessWithoutNullStreams;
@@ -54,6 +61,9 @@ export class PiProcess {
   private exited = false;
   onRecord: (record: RecordValue) => void = () => {};
   onState: (state: ProcessState, reason?: string) => void = () => {};
+  // Chunked history snapshots (pi-console-history-rpc) are correlated by requestId and
+  // reassembled below; they never reach the execution event stream.
+  private histories = new Map<string, { resolve: (m: RecordValue[]) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; chunks: (string | undefined)[]; total: number; got: number; bytes: number; onSnapshotStart?: () => void }>();
   constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string) {}
   private set(next: ProcessState, reason?: string) { this.state = transition(this.state, next); this.onState(this.state, reason); }
   async start(): Promise<void> {
@@ -93,6 +103,24 @@ export class PiProcess {
     if (this.state !== 'failed' && this.state !== 'stopped') this.set('failed', error.message);
     for (const [id, task] of this.pending) { clearTimeout(task.timer); task.reject(error); this.pending.delete(id); }
     for (const [id, task] of this.inspections) { clearTimeout(task.timer); task.reject(error); this.inspections.delete(id); }
+    for (const [id, task] of this.histories) { clearTimeout(task.timer); task.reject(error); this.histories.delete(id); }
+  }
+  private rejectHistory(requestId: string, reason: string) {
+    const task = this.histories.get(requestId);
+    if (task) { this.histories.delete(requestId); clearTimeout(task.timer); task.reject(new Error(`Pi history snapshot failed: ${reason}`)); }
+  }
+  private finishHistory(requestId: string) {
+    const task = this.histories.get(requestId);
+    if (!task) return;
+    this.histories.delete(requestId); clearTimeout(task.timer);
+    try {
+      const decoded = JSON.parse(Buffer.from(task.chunks.join(''), 'base64').toString('utf8'));
+      if (decoded?.kind !== 'pi-console.history' || decoded.version !== 1 || !Array.isArray(decoded.messages) || typeof decoded.requestId !== 'string')
+        throw new Error('invalid history snapshot payload');
+      if (decoded.requestId !== requestId) throw new Error('history snapshot identity mismatch');
+      if (decoded.dirty === true) throw new Error('session changed while the history snapshot was taken; retry');
+      task.resolve(decoded.messages);
+    } catch (error) { task.reject(error instanceof Error ? error : new Error(String(error))); }
   }
   private handle(record: RecordValue) {
     if (record.type === 'extension_ui_request' && record.method === 'setWidget' && record.widgetKey === 'subagent-inspect') {
@@ -104,8 +132,37 @@ export class PiProcess {
             if (task) { this.inspections.delete(reply.requestId); clearTimeout(task.timer); task.resolve(reply); }
           }
         } catch { /* Invalid or unrelated extension widget; let the request time out. */ }
+        return; // Inspection content is private to the requesting HTTP call, not an execution event.
       }
       return; // Inspection content is private to the requesting HTTP call, not an execution event.
+    }
+    if (record.type === 'extension_ui_request' && record.method === 'setWidget' && record.widgetKey === 'pi-console-history') {
+      const line = record.widgetLines?.[0];
+      if (Array.isArray(record.widgetLines) && record.widgetLines.length === 1 && typeof line === 'string' && line.length <= 65536 && line.startsWith(HISTORY_PREFIX)) {
+        try {
+          const chunk = JSON.parse(line.slice(HISTORY_PREFIX.length));
+          if (chunk.kind === 'pi-console.history-chunk' && chunk.version === 1 && typeof chunk.requestId === 'string') {
+            const task = this.histories.get(chunk.requestId);
+            if (task) {
+              // First chunk declares total; every later chunk must agree.
+              if (task.total === -1) {
+                if (!Number.isSafeInteger(chunk.total) || chunk.total < 1 || chunk.total > 1_000_000) { this.rejectHistory(chunk.requestId, 'invalid history chunk count'); return; }
+                task.total = chunk.total; task.chunks = new Array(chunk.total);
+                task.onSnapshotStart?.();
+              }
+              if (!Number.isSafeInteger(chunk.seq) || chunk.seq < 0 || chunk.seq >= task.total || task.chunks[chunk.seq] !== undefined ||
+                  chunk.total !== task.total || typeof chunk.data !== 'string' || chunk.data.length > HISTORY_CHUNK_MAX || !/^[A-Za-z0-9+/=]*$/.test(chunk.data)) {
+                this.rejectHistory(chunk.requestId, 'malformed history chunk');
+              } else {
+                task.bytes += chunk.data.length;
+                if (task.bytes > HISTORY_TOTAL_MAX) this.rejectHistory(chunk.requestId, 'history snapshot exceeds resource bound');
+                else { task.chunks[chunk.seq] = chunk.data; if (++task.got === task.total) this.finishHistory(chunk.requestId); }
+              }
+            }
+          }
+        } catch { /* Invalid or unrelated widget; let the request time out. */ }
+      }
+      return; // History chunks are private to the requesting call, not execution events.
     }
     if (record.type === 'response' && typeof record.id === 'string' && this.pending.has(record.id)) {
       const task = this.pending.get(record.id)!; this.pending.delete(record.id); clearTimeout(task.timer);
@@ -140,6 +197,34 @@ export class PiProcess {
     }
     return result;
   }
+  /**
+   * Full conversation history without the 8 MiB single-record limit.
+   * The bundled worker extension (consoleExtension(), always passed via --extension) exposes
+   * `pi-console-history-rpc`, which snapshots ctx.sessionManager.buildSessionProjection().messages
+   * (exact Pi branch + compaction + context-edit semantics, the same list get_messages returns
+   * for a settled session) and streams it back as correlated, bounded setWidget chunks.
+   * No fallback to one-shot get_messages: that record can exceed the 8 MiB parser limit and
+   * kill the worker, so a missing command means a broken install, not a degraded mode.
+   */
+  async getMessages(timeoutMs = 60000, onSnapshotStart?: () => void): Promise<RecordValue[]> {
+    const commands = (await this.call('get_commands')).data?.commands;
+    if (!Array.isArray(commands) || !commands.some((c: RecordValue) => c.name === 'pi-console-history-rpc' && c.source === 'extension'))
+      throw new Error('Pi Console history command missing; the bundled worker extension did not load');
+    const requestId = randomUUID().replaceAll('-', '');
+    const done = new Promise<RecordValue[]>((resolve, reject) => {
+      const timer = setTimeout(() => this.rejectHistory(requestId, 'history snapshot timed out'), timeoutMs);
+      timer.unref?.();
+      this.histories.set(requestId, { resolve, reject, timer, chunks: [], total: -1, got: 0, bytes: 0, onSnapshotStart });
+    });
+    void done.catch(() => {});
+    try {
+      await this.call('prompt', { message: `/pi-console-history-rpc ${requestId}` }, Math.min(timeoutMs, 30000));
+      return await done;
+    } catch (error) {
+      this.rejectHistory(requestId, (error as Error).message);
+      throw error;
+    }
+  }
   async inspectSubagent(asyncId: string, childId?: string): Promise<RecordValue> {
     const safe = (id: string) => /^[A-Za-z0-9_.:-]{1,256}$/.test(id);
     if (!safe(asyncId) || childId !== undefined && !safe(childId)) throw new Error('subagent ID cannot be inspected through Pi RPC');
@@ -170,6 +255,7 @@ export class PiProcess {
     const child = this.child;
     for (const [id, task] of this.pending) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.pending.delete(id); }
     for (const [id, task] of this.inspections) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.inspections.delete(id); }
+    for (const [id, task] of this.histories) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.histories.delete(id); }
     try { child.stdin.end(); } catch { /* The pipe may already be broken after an exit. */ }
     const timer = setTimeout(() => { try { child.kill(); } catch { /* Already gone. */ } }, 3500);
     timer.unref?.();

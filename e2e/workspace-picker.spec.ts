@@ -6,15 +6,15 @@ import { join } from 'node:path';
 test('workspace can be renamed and removed without deleting its folder',async({page})=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-remove-workspace-'));
   try{
-    await page.goto('/');await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Open Workspace'}).click();
+    await page.goto('/');await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const entry=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:any)=>w.path===root);
     await page.getByRole('button',{name:'Manage workspace'}).click();
     await page.getByLabel('Rename workspace').fill('Renamed workspace');await page.getByRole('button',{name:'Rename',exact:true}).click();
     await expect(page.getByRole('heading',{name:'Renamed workspace'})).toBeVisible();
-    page.once('dialog',dialog=>dialog.dismiss());await page.getByRole('button',{name:'Remove workspace'}).click();
+    page.once('dialog',dialog=>dialog.dismiss());await page.getByRole('button',{name:'Remove from Console'}).click();
     await expect(page.getByRole('heading',{name:'Renamed workspace'})).toBeVisible();
-    page.once('dialog',dialog=>{expect(dialog.message()).toContain('folder and Pi sessions will stay on disk');void dialog.accept()});
-    await page.getByRole('button',{name:'Remove workspace'}).click();
+    page.once('dialog',dialog=>{expect(dialog.message()).toContain('folder and its Pi sessions stay on disk');void dialog.accept()});
+    await page.getByRole('button',{name:'Remove from Console'}).click();
     await expect(page.getByRole('heading',{name:'Renamed workspace'})).toHaveCount(0);
     expect((await(await page.request.get('/api/workspaces')).json()).workspaces.some((w:any)=>w.id===entry.id)).toBe(false);
     expect((await stat(root)).isDirectory()).toBe(true);
@@ -168,7 +168,7 @@ test('folder browser selects a server-local workspace on desktop and mobile with
     await expect(dialog.getByRole('button',{name:'Use this folder'})).toBeEnabled();
     await dialog.getByRole('button',{name:'Use this folder'}).click();
     await expect(page.getByLabel('Workspace path')).toHaveValue(project);
-    await page.getByRole('button',{name:'Open Workspace'}).click();
+    await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.getByLabel('Workspace',{exact:true})).toHaveValue(/.+/);
     await page.getByRole('button',{name:'Manage workspace'}).click();
     await expect(page.getByLabel('Rename workspace')).toBeVisible();
@@ -176,6 +176,7 @@ test('folder browser selects a server-local workspace on desktop and mobile with
     await page.setViewportSize({width:390,height:780});
     await expect(page.locator('main')).toHaveClass(/view-sessions/);
     await page.getByRole('button',{name:'← Workspaces'}).click();
+    await page.getByRole('button',{name:'＋ Add a workspace',exact:true}).click();
     await page.getByRole('button',{name:'Browse folders'}).click();
     await expect(dialog.getByLabel('Folders',{exact:true})).toContainText('nested');
     await dialog.getByRole('button',{name:'nested'}).click();

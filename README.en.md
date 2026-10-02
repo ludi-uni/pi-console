@@ -18,6 +18,8 @@ pi install npm:@ludi-uni/pi-console@latest
 
 Restart Pi or run `/reload`, then enter `/pi-console` in Pi. Open the displayed local URL, choose a workspace (Pi's working directory), and select a session. **Installing the package alone does not start the server.**
 
+The server is an independent background process — it keeps running when Pi exits or reloads, and `/pi-console status|stop|restart` (or `scripts\pi-console.ps1 <command>` / `node package/pi-console.mjs <command>` from any directory) manages the same instance. `restart` interrupts active Web sessions; a server started by an older version is reported but never auto-stopped.
+
 For a local source checkout or standalone `npm start`, see [Operations and development](docs/operations.en.md#installation).
 
 Pi and Windows Startup explicitly read `~/.pi/agent/pi-console/.env` by default, keeping Cloudflare configuration outside the replaceable npm package. See [startup `.env` configuration](docs/operations.en.md#env-for-pi-and-windows-startup) for location, precedence and restart instructions.

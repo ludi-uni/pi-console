@@ -22,7 +22,13 @@ if(behavior==='exit-immediately')process.exit(0);
 readline.createInterface({input:process.stdin}).on('line',s=>{const c=JSON.parse(s);
 if('exit-before:'+c.type===behavior)process.exit(1);
 if(c.type==='get_state')process.stdout.write(JSON.stringify({id:c.id,type:'response',success:true,data:{sessionId:'fake-close',sessionFile:file,isStreaming:false}})+'\\n');
-else if(c.type==='get_messages')process.stdout.write(JSON.stringify({id:c.id,type:'response',success:true,data:{messages:[]}})+'\\n');
+else if(c.type==='get_commands')process.stdout.write(JSON.stringify({id:c.id,type:'response',success:true,data:{commands:[{name:'pi-console-history-rpc',source:'extension'}]}})+'\\n');
+else if(c.type==='prompt'&&/^\\/pi-console-history-rpc\\s/.test(c.message||'')){
+  const requestId=c.message.split(/\\s+/)[1];
+  const data=Buffer.from(JSON.stringify({kind:'pi-console.history',version:1,requestId,sessionId:'fake-close',leafId:null,dirty:false,messages:[]}),'utf8').toString('base64');
+  process.stdout.write(JSON.stringify({type:'extension_ui_request',id:'w1',method:'setWidget',widgetKey:'pi-console-history',widgetLines:['PI_CONSOLE_HISTORY_JSON:'+JSON.stringify({kind:'pi-console.history-chunk',version:1,requestId,seq:0,total:1,data})]})+'\\n');
+  process.stdout.write(JSON.stringify({id:c.id,type:'response',success:true,data:{disposition:'handled'}})+'\\n');
+}
 else process.stdout.write(JSON.stringify({id:c.id,type:'response',success:true,data:{}})+'\\n');
 if('exit-on:'+c.type===behavior)process.exit(0);});`;
 
@@ -65,8 +71,8 @@ test('exit before the get_state reply: open() fails, close() settles, starting i
   } finally { await cleanup(); }
 });
 
-test('exit before the get_messages reply: open() fails, attached entry is removed, retry on a healthy fake succeeds', { timeout: 90000 }, async () => {
-  const { manager, workspace, cleanup } = await setup('exit-before:get_messages');
+test('exit before the get_commands reply: open() fails, attached entry is removed, retry on a healthy fake succeeds', { timeout: 90000 }, async () => {
+  const { manager, workspace, cleanup } = await setup('exit-before:get_commands');
   try {
     await assert.rejects(timeout(manager.open(workspace.id, 'fake-close')));
     assert.equal((manager as any).starting.has('fake-close'), false, 'starting entry leaked');

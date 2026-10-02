@@ -1,5 +1,5 @@
 export type ProcessState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
-export type EventType = 'RunStarted' | 'RunCompleted' | 'RunFailed' | 'MessageStarted' | 'MessageDelta' | 'MessageCompleted' | 'ToolStarted' | 'ToolProgress' | 'ToolCompleted' | 'ToolFailed' | 'AgentSettled' | 'AgentStarted' | 'AgentProgress' | 'AgentCompleted' | 'AgentFailed' | 'ErrorEvent' | 'ExecutionNodeUpdated' | 'DecisionRequired' | 'DecisionResolved';
+export type EventType = 'RunStarted' | 'RunCompleted' | 'RunFailed' | 'MessageStarted' | 'MessageDelta' | 'MessageCompleted' | 'ToolStarted' | 'ToolProgress' | 'ToolCompleted' | 'ToolFailed' | 'AgentSettled' | 'AgentStarted' | 'AgentProgress' | 'AgentCompleted' | 'AgentFailed' | 'ErrorEvent' | 'ExecutionNodeUpdated' | 'DecisionRequired' | 'DecisionResolved' | 'QueueChanged';
 export type ExecutionNodeKind = 'run' | 'orchestrator' | 'task' | 'agent' | 'tool' | 'decision';
 export type ExecutionStatus = 'queued' | 'running' | 'waiting' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown';
 export interface ExecutionNode { id: string; kind: ExecutionNodeKind; label: string; status: ExecutionStatus; parentId?: string; correlation: 'explicit' | 'derived-safe' | 'unknown'; sourceKind: 'pi' | 'pi-subagents' | 'orchestrator'; nativeId?: string; startedAt?: string; updatedAt: string; endedAt?: string; action?: string; attempt?: number; model?: string; provider?: string; dependencies?: string[]; blockedReason?: string; attempts?: { attempt: number; model?: string; failureClass?: string }[]; details?: Record<string, string | number | boolean | null> }
@@ -25,4 +25,14 @@ export interface ChatMessage { id: string; role: 'user' | 'assistant'; text: str
 export interface Workspace { id: string; name: string; path: string; pinned: boolean; lastOpenedAt: string; valid?: boolean }
 export interface SessionInfo { id: string; workspaceId: string; filePath: string; name?: string; updatedAt?: string; running?: boolean; decisionCount?: number }
 export interface ActiveSessionSummary { sessionId: string; workspaceId: string; sessionName: string; workspaceName: string; running: boolean; decisionCount: number; updatedAt: string; work: { id: string; label: string; status: ExecutionStatus; kind: ExecutionNodeKind; action?: string }[]; completion?: { id: string; status: 'completed' | 'failed' | 'cancelled' | 'interrupted'; at: string; scope: 'conversation' | 'subagent' | 'kit' } }
-export interface Snapshot { session: SessionInfo; runtime: ProcessState; activeRunId?: string; chat: ChatMessage[]; events: ExecutionEvent[]; execution: ExecutionStateSnapshot; seq: number; generation: string }
+// Console-owned pre-dispatch follow-up queue. Snapshot/SSE items carry display
+// metadata only — image payloads live solely in the server-side queue file and are
+// attached at dispatch. `held` = delivery is uncertain (restart/stop/failure): the
+// item is never re-sent automatically; an explicit Resume queued action is required.
+export type QueueItemStatus = 'pending' | 'dispatching' | 'held' | 'failed';
+export interface QueuedItem { id: string; message: string; revision: number; attachments?: ChatAttachment[]; queuedAt: string; status: QueueItemStatus; error?: string }
+// Durable per-session record: original user text + original attachments (image data
+// included — file is owner-read only). Wrappers are regenerated via prepareAttachments
+// on edit and dispatch so marker formats never go stale.
+export interface StoredQueueItem { id: string; text: string; attachments: PromptAttachment[]; queuedAt: string; revision: number; status: QueueItemStatus; error?: string }
+export interface Snapshot { session: SessionInfo; runtime: ProcessState; activeRunId?: string; chat: ChatMessage[]; events: ExecutionEvent[]; execution: ExecutionStateSnapshot; queue?: QueuedItem[]; queueHeld?: boolean; seq: number; generation: string }

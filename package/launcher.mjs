@@ -1,19 +1,49 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { consoleDataDir } from './data-directory.mjs';
 import { loadConsoleEnvironment } from './environment.mjs';
 import { fileURLToPath } from 'node:url';
 
 const serverEntry = fileURLToPath(new URL('../server/index.ts', import.meta.url));
 const piCliSuffix = /[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
+const piCliPath = root => join(root, '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js');
 
 export function hostPiCli(argv = process.argv) {
   const entry = argv[1];
   return entry && isAbsolute(entry) && piCliSuffix.test(entry) && existsSync(entry) ? entry : undefined;
 }
 
-/** Start only when explicitly requested; loading the Pi extension has no side effects. */
+/** Resolve the Pi RPC CLI for any launcher context.
+ * A non-Pi invocation (packaged CLI, Windows Startup) has no host argv, so fall back to a
+ * `pi` executable on PATH and finally to the npm global install roots — the same roots the
+ * server's own worker spawner checks. PI_CONSOLE_PI_COMMAND stays authoritative. */
+export function resolvePiCli(env = process.env, argv = process.argv) {
+  const override = env.PI_CONSOLE_PI_COMMAND;
+  if (override) {
+    if (!isAbsolute(override) || !existsSync(override)) throw new Error('PI_CONSOLE_PI_COMMAND must point to an existing absolute Pi cli.js');
+    return override;
+  }
+  const hosted = hostPiCli(argv);
+  if (hosted) return hosted;
+  for (const dir of (env.PATH ?? '').split(delimiter).filter(Boolean)) {
+    if (['pi.cmd', 'pi.ps1', 'pi.exe', 'pi'].some(name => existsSync(join(dir, name)))) {
+      const script = piCliPath(join(dir, 'node_modules'));
+      if (existsSync(script)) return script;
+    }
+  }
+  const roots = [
+    env.APPDATA && join(env.APPDATA, 'npm', 'node_modules'),
+    (env.HOME ?? env.USERPROFILE) && join(env.HOME ?? env.USERPROFILE, '.npm-global', 'lib', 'node_modules'),
+    '/usr/local/lib/node_modules',
+  ].filter(Boolean);
+  const file = roots.map(piCliPath).find(existsSync);
+  if (file) return file;
+  throw new Error('Pi CLI not found; set PI_CONSOLE_PI_COMMAND to the absolute cli.js path');
+}
+
+/** Legacy in-process launcher: start a piped child owned by this process.
+ * Prefer startManagedServer (./server-manager.mjs) for a server that survives the launcher. */
 export async function startConsole({ cwd = process.cwd(), env = process.env, timeoutMs = 10000 } = {}) {
   env = await loadConsoleEnvironment(env);
   const port = Number(env.PORT ?? 31717);
@@ -22,11 +52,8 @@ export async function startConsole({ cwd = process.cwd(), env = process.env, tim
     ...env,
     PI_CONSOLE_DATA_DIR: consoleDataDir(env),
     // The host Pi binary is authoritative; do not guess a different globally installed version.
-    PI_CONSOLE_PI_COMMAND: env.PI_CONSOLE_PI_COMMAND || hostPiCli() || '',
+    PI_CONSOLE_PI_COMMAND: resolvePiCli(env),
   };
-  if (!childEnv.PI_CONSOLE_PI_COMMAND) throw new Error('Pi CLI not found; set PI_CONSOLE_PI_COMMAND to the absolute cli.js path');
-  if (!isAbsolute(childEnv.PI_CONSOLE_PI_COMMAND) || !existsSync(childEnv.PI_CONSOLE_PI_COMMAND))
-    throw new Error('PI_CONSOLE_PI_COMMAND must point to an existing absolute Pi cli.js');
   const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), serverEntry], {
     cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });

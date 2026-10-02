@@ -40,14 +40,24 @@ test('an unrelated same-name Startup shortcut is never overwritten or removed', 
   }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100})}
 });
 
-test('startup entry starts a separate loopback server and exits if a listener already exists',async()=>{
-  const listener=createServer();listener.listen(0,'127.0.0.1');await once(listener,'listening');const port=listener.address().port;
-  const child=spawn(process.execPath,['package/startup.mjs'],{cwd:process.cwd(),env:{...process.env,PORT:String(port)},stdio:'ignore'});
-  try{const [code]=await once(child,'close');assert.equal(code,0);assert.equal(listener.listening,true)}finally{listener.close();await once(listener,'close')}
+test('startup entry exits when the port is occupied and starts a detached managed server otherwise',async()=>{
+  const listener=createServer(socket=>socket.destroy());listener.listen(0,'127.0.0.1');await once(listener,'listening');const port=listener.address().port;
+  const root0=await mkdtemp(join(tmpdir(),'pi-console-startup-idle-'));
+  const child=spawn(process.execPath,['package/startup.mjs'],{cwd:process.cwd(),env:{...process.env,PORT:String(port),PI_CONSOLE_DATA_DIR:root0},stdio:'ignore'});
+  try{const [code]=await once(child,'close');assert.equal(code,0);assert.equal(listener.listening,true)}finally{listener.close();await once(listener,'close');await rm(root0,{recursive:true,force:true})}
   const root=await mkdtemp(join(tmpdir(),'pi-console-startup-server-'));
   const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');const freePort=probe.address().port;probe.close();await once(probe,'close');
-  const server=spawn(process.execPath,['--import','tsx','package/startup.mjs'],{cwd:process.cwd(),env:{...process.env,PORT:String(freePort),PI_CONSOLE_DATA_DIR:root,PI_CODING_AGENT_DIR:join(root,'agent'),PI_CONSOLE_PUBLIC_ORIGIN:'',PI_CONSOLE_ACCESS_TEAM_DOMAIN:'',PI_CONSOLE_ACCESS_AUD:''},stdio:'pipe'});
-  let stderr='';server.stderr.on('data',chunk=>stderr+=chunk.toString());
-  try{let response;const until=Date.now()+10000;while(Date.now()<until){try{response=await fetch(`http://127.0.0.1:${freePort}/api/session-retention`);break}catch{await new Promise(resolve=>setTimeout(resolve,50))}}assert.equal(response?.status,200,stderr);assert.equal((await response.json()).enabled,false)}
-  finally{server.kill();await once(server,'close').catch(()=>{});await rm(root,{recursive:true,force:true})}
+  const piCli=process.env.PI_CONSOLE_PI_COMMAND||join(process.env.APPDATA||'','npm','node_modules','@earendil-works','pi-coding-agent','dist','bundle','cli.js');
+  const env={...process.env,PORT:String(freePort),PI_CONSOLE_DATA_DIR:root,PI_CODING_AGENT_DIR:join(root,'agent'),PI_CONSOLE_PI_COMMAND:piCli,PI_CONSOLE_PUBLIC_ORIGIN:'',PI_CONSOLE_ACCESS_TEAM_DOMAIN:'',PI_CONSOLE_ACCESS_AUD:''};
+  try{
+    const launcherProc=spawn(process.execPath,['--import','tsx','package/startup.mjs'],{cwd:process.cwd(),env,stdio:'pipe'});
+    let out='';launcherProc.stdout.on('data',c=>out+=c.toString());launcherProc.stderr.on('data',c=>out+=c.toString());
+    const [code]=await once(launcherProc,'close');assert.equal(code,0,out);
+    let response;const until=Date.now()+10000;while(Date.now()<until){try{response=await fetch(`http://127.0.0.1:${freePort}/api/session-retention`);break}catch{await new Promise(resolve=>setTimeout(resolve,50))}}
+    assert.equal(response?.status,200,out);assert.equal((await response.json()).enabled,false);
+    // The detached managed server survives the startup entry's exit.
+    const {stopManagedServer}=await import('../package/server-manager.mjs');
+    const stopped=await stopManagedServer({env:{...env,PI_CONSOLE_DATA_DIR:root}});
+    assert.equal(stopped.status,'stopped');
+  }finally{const {stopManagedServer}=await import('../package/server-manager.mjs');await stopManagedServer({env:{...env,PI_CONSOLE_DATA_DIR:root}}).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:200})}
 });

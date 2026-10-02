@@ -15,6 +15,17 @@ pi list                           # confirm registration
 
 Restart Pi or run `/reload`, then start `/pi-console`. The checkout and built `dist/` must remain available. `dist/` is not committed, so installing directly from the git URL is not supported. The published npm tarball contains the built browser assets and Pi installs its runtime dependencies. Installation alone does not connect or start the server; until a session is selected the Web status reads `Server ready · no Pi session`.
 
+You can also manage the same server without Pi, from any directory:
+
+```powershell
+# from a source checkout or an installed package folder
+.\scripts\pi-console.ps1 start          # or: node package\pi-console.mjs start
+.\scripts\pi-console.ps1 status
+.\scripts\pi-console.ps1 stop
+.\scripts\pi-console.ps1 restart 31718 # restart on a chosen port
+.\scripts\pi-console.ps1 port          # print the configured port
+```
+
 For standalone use without the Pi package, install `@earendil-works/pi-coding-agent` and configure a Pi model:
 
 ```powershell
@@ -48,7 +59,7 @@ PORT=31717
 - An incoming `PI_CONSOLE_DATA_DIR` selects `<that directory>/.env`. Otherwise an incoming `PI_CODING_AGENT_DIR` selects `<agent directory>/pi-console/.env`. **Set these location selectors in the environment that starts Pi/Windows Startup, not inside the file.** Loading a file does not recursively discover another one.
 - Explicit process environment values override file values, including empty strings. An explicit `/pi-console 31718` also overrides the file's `PORT`. If edits seem ignored, check for stale variables in the launching process.
 - A missing file keeps environment-only startup. Read errors fail startup; partially configured Cloudflare variables also refuse startup. Do not disable authentication to work around configuration errors.
-- Restart Console and reload the browser after editing. For a Pi-owned server use `/pi-console stop`, then `/pi-console`. A server owned by Windows Startup or another process must be stopped separately. Restart Pi itself if changing its inherited environment.
+- Restart Console and reload the browser after editing. Use `/pi-console restart` (or `pi-console.ps1 restart`) and reload the browser — restart interrupts active Web sessions. A server started by an older, unmanaged version must still be stopped from its own process; the new manager reports it but never kills it.
 - Only trusted operators should edit this file. Do not store it inside a workspace/npm package or commit real values to a public repository. Use `C:/...` for Windows paths: Node's double-quoted `.env` syntax interprets `\n` as a newline.
 
 Standalone `npm start` / `npm run dev` still load the repository-root `.env`; the stable file above is for Pi-package and Windows Startup launches. See the [Cloudflare guide](cloudflare-access.md) for Tunnel Host and authentication settings.
@@ -57,14 +68,20 @@ Standalone `npm start` / `npm run dev` still load the repository-root `.env`; th
 
 The default server binds only to `127.0.0.1` without authentication. Do not expose it through a LAN or unprotected tunnel. The separate protected remote mode requires Cloudflare Tunnel + Access, verifies signed Access JWTs on every request, and still binds only to loopback. Follow [Cloudflare Tunnel + Access](cloudflare-access.md) before configuring a hostname.
 
-`/pi-console stop` stops the Pi-owned server. A normal Pi shutdown stops it too; an abruptly killed Pi process may leave its child running. On Windows, **Settings → Start with Windows** installs or removes the current user's Startup shortcut. Pi has no post-install hook, so the extension installs the shortcut when first loaded in a trusted interactive Pi session (or use **Install now**).
+Since 0.4.3 the server is an **independent background process**: `/pi-console start`, the `pi-console.ps1` CLI and Windows Startup all launch the same detached server through a shared manager, so it survives Pi exit, `/reload` and even a crashed Pi. `/pi-console stop` (or `pi-console.ps1 stop`) shuts it down from any of them. Session history is fetched through the bundled worker extension's chunked `pi-console-history-rpc` command (bounded `setWidget` records reassembled server-side), so conversations larger than the 8 MiB Pi RPC record — including a single oversized message — resume correctly. The 8 MiB record limit itself is unchanged: a single oversized **live** event record (for example a huge streaming `message_update`) is still not supported.
+
+Managed state lives in the Console data directory, not the package: `server-state.json` (pid/port), `server-token` (a per-start random management secret) and `server.log` (server output). Identity verifies a fresh HMAC challenge response plus PID and start time; shutdown also requires an HMAC proof — the token is never sent on the wire. Stale management state may be safely cleared, but recycled PIDs and foreign listeners receive no shutdown request. Old or unreadable `server.lock` files are never automatically removed: remove only that lock manually after confirming that no management command is running. The manager never kills a process it cannot prove is its own, and has no signal fallback at all: a managed server that does not exit within the shutdown window is reported `stopping`, never SIGTERM'd. Management routes additionally reject requests carrying proxy/tunnel headers even with a loopback Host.
+
+`/pi-console restart` (or `pi-console.ps1 restart`) stops then starts the managed server and interrupts every active Web session. On Windows, **Settings → Start with Windows** installs or removes the current user's Startup shortcut; the Startup entry runs the same manager, so a login start joins the running server instead of duplicating it. Pi has no post-install hook, so the extension installs the shortcut when first loaded in a trusted interactive Pi session (or use **Install now**).
 
 ## Storage and model configuration
 
 | Data | Location and ownership |
 | --- | --- |
 | Pi package / Windows Startup workspace registrations and quick prompts | `~/.pi/agent/pi-console/workspaces.json`, or under `PI_CODING_AGENT_DIR`; override explicitly with `PI_CONSOLE_DATA_DIR`. |
+| Console-owned queued prompts | `queue/<sessionId>.json` in the same directory; includes prompt and attachment contents. Restart restores held items requiring explicit Resume. |
 | Automatic session cleanup settings | `session-retention.json` in the same stable data directory. |
+| Managed-server state, token and log | `server-state.json`, `server-token`, `server.log` in the same directory; the token is a local-only random secret, regenerated every start. |
 | Standalone `npm start` | `.pi-console/` in the working directory by default. |
 | Pi conversations | Pi's session directory; override with `PI_CODING_AGENT_SESSION_DIR`. Browser reconnects do not remove them. |
 | Appearance and other browser preferences | Stored in the browser; not shared with pi-web. |

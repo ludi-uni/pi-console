@@ -1,18 +1,12 @@
 // Launched by the current user's Windows Startup shortcut, never by the Pi RPC worker.
-// The stable Console .env is loaded explicitly, independent of the package/workspace cwd.
-import { connect } from 'node:net';
-import { consoleDataDir } from './data-directory.mjs';
-import { loadConsoleEnvironment } from './environment.mjs';
-Object.assign(process.env, await loadConsoleEnvironment());
-const port = Number(process.env.PORT ?? 31717);
-if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid pi-console startup PORT');
-const occupied = await new Promise(resolve => {
-  const socket = connect({host:'127.0.0.1',port});
-  socket.setTimeout(1500);
-  socket.once('connect',()=>{socket.destroy();resolve(true)});
-  socket.once('error',()=>{socket.destroy();resolve(false)});
-  socket.once('timeout',()=>{socket.destroy();resolve(true)});
-});
-if (occupied) process.exit(0); // Do not disturb an existing server or another owner of the port.
-process.env.PI_CONSOLE_DATA_DIR = consoleDataDir(process.env);
-await import('../server/index.ts');
+// Goes through the shared detached-server manager, so a login start joins the same state,
+// lock and log as /pi-console and the CLI — and a managed server already running from an
+// earlier session is reused instead of duplicated.
+import { startManagedServer } from './server-manager.mjs';
+try {
+  await startManagedServer();
+} catch (error) {
+  // Startup runs without a console; record the failure in the shared log tail location.
+  console.error(`pi-console startup: ${error.message}`);
+  process.exitCode = 1;
+}

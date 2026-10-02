@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,6 +8,21 @@ import { kitRoot } from '../server/adapters/orchestrator/source.ts';
 import { WorkspaceStore } from '../server/runtime/workspaces.ts';
 import { SessionEvents } from '../server/runtime/events.ts';
 import { RuntimeManager } from '../server/runtime/manager.ts';
+
+// Fake kits have no model-routing registry. Never merge the operator's real Console
+// model settings into these isolated fixture contexts.
+let testDataDir: string;
+let previousDataDir: string | undefined;
+beforeEach(async () => {
+  previousDataDir = process.env.PI_CONSOLE_DATA_DIR;
+  testDataDir = await mkdtemp(join(tmpdir(), 'pi-console-kit-data-'));
+  process.env.PI_CONSOLE_DATA_DIR = testDataDir;
+});
+afterEach(async () => {
+  if (previousDataDir === undefined) delete process.env.PI_CONSOLE_DATA_DIR;
+  else process.env.PI_CONSOLE_DATA_DIR = previousDataDir;
+  await rm(testDataDir, { recursive: true, force: true });
+});
 
 test('discovers the official Pi npm kit when the legacy extension junction is absent', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-console-kit-discovery-'));
@@ -36,22 +51,34 @@ test('Pi steering and follow-up queue through RPC without starting a second run'
     const runtime=new RuntimeManager(store,root),session={id:'queue-session',workspaceId:workspace.id,filePath:join(root,'session.jsonl')};
     const state=new SessionEvents(session,()=> 'running');state.preparePrompt('First');state.accepted();
     const calls: unknown[]=[];
-    (runtime as any).active.set(session.id,{session,state,worker:{call:async(type:string,args:unknown)=>{calls.push({type,args});return {data:{}}}}});
+    const entry={session,state,worker:{call:async(type:string,args:unknown)=>{calls.push({type,args});if(type==='prompt')setTimeout(()=>{state.ingest({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Done'}]}});state.ingest({type:'agent_settled'});},0);return {data:{}}}}};
+    (runtime as any).active.set(session.id,entry);(runtime as any).drainSessionQueue(entry);
     await assert.rejects(runtime.prompt(workspace.id,session.id,'No mode'),/select steer or follow-up/);
+    // "Queue after run" is now the console-owned editable queue: nothing goes to Pi
+    // until the run settles and the drain loop dispatches the head item as a prompt.
     await runtime.prompt(workspace.id,session.id,'Later',[],'followUp');
     await runtime.prompt(workspace.id,session.id,'Change direction',[],'steer');
-    assert.deepEqual(calls,[{type:'follow_up',args:{message:'Later'}},{type:'steer',args:{message:'Change direction'}}]);
+    assert.deepEqual(calls,[{type:'steer',args:{message:'Change direction'}}]);
     // Queued steer/follow-up text must NOT appear as a sent chat bubble before Pi delivers it.
     assert.deepEqual(state.chat.map(m=>m.text),['First']);
     // It is still surfaced as a pending queued execution node, not a premature chat message.
     const queued=state.execution.snapshot().nodes.filter(n=>n.status==='queued'&&n.sourceKind==='pi');
-    assert.deepEqual(queued.map(n=>n.label),['Queued: Later','Queued: Change direction']);
+    assert.equal(queued.length,2);
+    assert.ok(queued.some(n=>n.label==='Queued: Later'));
+    assert.ok(queued.some(n=>n.label.startsWith('Steered (immediate, not editable): Change direction')));
+    // The console queue item is stable-id and editable until dispatch.
+    const queue=state.snapshot().queue!;
+    assert.equal(queue.length,1);assert.equal(queue[0].message,'Later');assert.equal(queue[0].status,'pending');assert.equal(queue[0].revision,0);
+    assert.equal((state.snapshot().queue![0] as any).prepared,undefined); // no raw payload in snapshot
     state.ingest({type:'message_end',message:{role:'user',content:[{type:'text',text:'First'}]}});
     assert.deepEqual(state.chat.map(m=>m.text),['First']);
-    state.ingest({type:'message_end',message:{role:'user',content:[{type:'text',text:'Later'}]}});
-    assert.deepEqual(state.chat.map(m=>m.text),['First','Later']);
-    assert.deepEqual(state.execution.snapshot().nodes.filter(n=>n.sourceKind==='pi'&&n.kind==='task').map(n=>n.status),['completed','queued']);
-    assert.equal(state.busy,true);
+    // Settling the run lets the drain loop dispatch the queued item as a normal prompt.
+    state.ingest({type:'agent_settled'});
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.deepEqual(calls.at(-1),{type:'prompt',args:{message:'Later'}});
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(state.snapshot().queue!.length,0);
+    assert.ok(state.chat.some(m=>m.role==='assistant'&&m.text==='Done'&&m.complete));
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -95,7 +122,7 @@ export const startOrchestration=async(_ctx,args)=>{args.onProgress?.('計画中'
     await writeFile(session.filePath,JSON.stringify({type:'session',id:session.id,cwd:root})+'\n'+JSON.stringify({type:'session_info',name:'Progress task'})+'\n'+JSON.stringify({type:'message',message:{role:'assistant',content:[]}})+'\n');
     const calls: unknown[]=[];let reportPrompted=false;
     const state=new SessionEvents(session,()=> 'running');
-    (runtime as any).active.set(session.id,{session,state,worker:{call:async(type:string,args:unknown)=>{calls.push({type,args});if(type==='get_messages')return {data:{messages:[{role:'assistant',content:[{type:'toolCall',id:'old-tool'}]},...(reportPrompted?[{role:'user',content:'report'},{role:'assistant',content:[{type:'text',text:'保存した最終報告'}]}]:[])]}};if(type==='prompt'){reportPrompted=true;setTimeout(()=>{state.ingest({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'保存した最終報告'}]}});state.ingest({type:'agent_settled'});},0);}return {data:{}}}}});
+    (runtime as any).active.set(session.id,{session,state,worker:{getMessages:async()=>[{role:'assistant',content:[{type:'toolCall',id:'old-tool'}]},...(reportPrompted?[{role:'user',content:'report'},{role:'assistant',content:[{type:'text',text:'保存した最終報告'}]}]:[])],call:async(type:string,args:unknown)=>{calls.push({type,args});if(type==='prompt'){reportPrompted=true;setTimeout(()=>{state.ingest({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'保存した最終報告'}]}});state.ingest({type:'agent_settled'});},0);}return {data:{}}}}});
     const started=await runtime.startOrchestrator(workspace.id,session.id,'Progress task');
     await new Promise(resolve=>setTimeout(resolve,10));
     assert.deepEqual(calls,[{type:'get_state',args:undefined},{type:'set_session_name',args:{name:'Progress task'}}]);
@@ -131,7 +158,7 @@ export const startOrchestration=async()=>{writeFileSync(${JSON.stringify(join(ro
     const store=new WorkspaceStore(join(root,'workspaces.json')),workspace=await store.add(root);
     const runtime=new RuntimeManager(store,root),session={id:'persist-session',workspaceId:workspace.id,filePath:join(root,'session.jsonl')};
     const state=new SessionEvents(session,()=> 'running');let promptText='',prompts=0;
-    const worker={call:async(type:string,args:any)=>{if(type==='get_state')return {data:{sessionName:undefined}};if(type==='get_messages')return {data:{messages:[{role:'assistant',content:[{type:'text',text:'受付しました'}]},...(prompts>=2?[{role:'user',content:'report'},{role:'assistant',content:[{type:'text',text:'最終報告'}]}]:[])]}};if(type==='prompt'){promptText=args.message;if(++prompts===2)setTimeout(()=>{state.ingest({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'最終報告'}]}});state.ingest({type:'agent_settled'});},0);}return {data:{}}}};
+    const worker={getMessages:async()=>[{role:'assistant',content:[{type:'text',text:'受付しました'}]},...(prompts>=2?[{role:'user',content:'report'},{role:'assistant',content:[{type:'text',text:'最終報告'}]}]:[])],call:async(type:string,args:any)=>{if(type==='get_state')return {data:{sessionName:undefined}};if(type==='prompt'){promptText=args.message;if(++prompts===2)setTimeout(()=>{state.ingest({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'最終報告'}]}});state.ingest({type:'agent_settled'});},0);}return {data:{}}}};
     (runtime as any).active.set(session.id,{session,state,worker});
     const started=await runtime.startOrchestrator(workspace.id,session.id,'# My kit task');
     assert.equal(started.job.preparing,true);

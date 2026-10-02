@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { loadConsoleEnvironment } from '../package/environment.mjs';
 import { startConsole } from '../package/launcher.mjs';
+import { managedServerStatus, stopManagedServer } from '../package/server-manager.mjs';
 
 const availablePort = async () => {
   const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');
@@ -63,21 +64,28 @@ test('Pi launcher reads stable remote configuration before port selection and ig
   }finally{if(child){child.kill();await once(child,'close');}await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 
-test('Windows startup entry uses the same stable remote .env and ignores cwd .env', {timeout:20000},async()=>{
+test('Windows startup entry uses the same stable remote .env and ignores cwd .env', {timeout:30000},async()=>{
   const root=await mkdtemp(join(tmpdir(),'console-env-startup-')),env=isolatedEnv(root),port=await availablePort();
-  let child,output='';
+  let child;
   try{
     const cwd=join(root,'replaceable-package');await mkdir(cwd);await mkdir(env.PI_CONSOLE_DATA_DIR);
     await writeFile(join(env.PI_CONSOLE_DATA_DIR,'.env'),remoteFile(port));
     await writeFile(join(cwd,'.env'),'PORT=invalid\n');
+    // The launcher exits after handing the detached managed server off; server output
+    // goes to <data>/server.log, not the launcher's stdout.
     child=spawn(process.execPath,['--import',import.meta.resolve('tsx'),fileURLToPath(new URL('../package/startup.mjs',import.meta.url))],{cwd,env,stdio:'pipe'});
-    child.stdout.on('data',chunk=>output+=chunk.toString());child.stderr.on('data',chunk=>output+=chunk.toString());
-    const until=Date.now()+10000;
-    while(!output.includes(`pi-console http://127.0.0.1:${port}`)&&Date.now()<until&&child.exitCode===null)await new Promise(resolve=>setTimeout(resolve,50));
-    assert.ok(output.includes(`pi-console http://127.0.0.1:${port}`),output);
+    const [code]=await once(child,'close');
+    assert.equal(code,0,'startup entry must exit after spawning the managed server');
+    const managed=await managedServerStatus({env});
+    assert.equal(managed.status,'running');assert.equal(managed.port,port);
     assert.equal(await status(port,'console.example.test'),401);
     assert.equal(await status(port,'evil.example.test'),403);
-  }finally{if(child&&child.exitCode===null){child.kill();await once(child,'close');}await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+  }finally{
+    // Always stop the managed child through the manager — never leave it alive.
+    await stopManagedServer({env}).catch(()=>{});
+    if(child&&child.exitCode===null){child.kill();await once(child,'close');}
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
 });
 
 test('partial remote .env fails startup instead of silently serving in local mode', {timeout:20000},async()=>{
