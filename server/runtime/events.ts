@@ -150,10 +150,14 @@ export class SessionEvents {
   private async commitResumeQueue() {
     if (!this.queueHeld && !this.queue.some(item => item.status === 'held' || item.status === 'failed')) return;
     const touched = this.queue.filter(item => item.status === 'held' || item.status === 'failed');
+    const previous = touched.map(item => ({ item, status: item.status, error: item.error }));
     this.queueHeld = false;
     for (const item of touched) { item.status = 'pending'; item.error = undefined; }
     if (this.queueStore) try { await this.persistQueue(); }
-    catch (error) { for (const item of touched) item.status = 'held'; this.queueHeld = true; throw error; }
+    catch (error) {
+      for (const saved of previous) { saved.item.status = saved.status; saved.item.error = saved.error; }
+      this.queueHeld = true; throw error;
+    }
     for (const item of touched) this.queueNode(item);
     this.queueChanged(); this.maybeDrainQueue();
   }
@@ -257,7 +261,13 @@ export class SessionEvents {
   }
   // Bound the drain loop to this projection's lifetime: worker close/unload resolves
   // the waiter so no immortal loop outlives a closed session.
-  cancelQueueDrain() { this.queueDrainCancelled = true; this.queueHeld = true; this.maybeDrainQueue(); }
+  cancelQueueDrain() {
+    this.queueDrainCancelled = true; this.queueHeld = true;
+    // Release the drainer's terminal-event waiter when the session is shut down.
+    // An active dispatch remains uncertain and must not be retried automatically.
+    if (this.busy) this.interrupted('session closed before run completion; delivery effect is unconfirmed');
+    this.maybeDrainQueue();
+  }
   // Public wake-up for state changes outside this class (e.g. a kit job finishing).
   wakeQueueDrain() { this.maybeDrainQueue(); }
   private maybeDrainQueue() { const notify = this.queueRequest; this.queueRequest = undefined; this.queueDrained = undefined; if (notify) notify(); else this.queueWakePending = true; }

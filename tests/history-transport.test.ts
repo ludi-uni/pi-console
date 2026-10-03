@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PiProcess } from '../server/adapters/pi/process.ts';
 import { SessionEvents } from '../server/runtime/events.ts';
+import { fixturePrelude } from './helpers/worker-fixture.ts';
 
 // Fake Pi CLI implementing just enough RPC for the chunked history transport:
 // get_state, get_commands (advertises pi-console-history-rpc), and a prompt handler that
 // emits the configured snapshot as PI_CONSOLE_HISTORY_JSON widget chunks. `behavior`
 // selects the payload or a fault mode.
-const fakeCli = (behavior: string) => `const fs=require('fs'),path=require('path'),readline=require('readline');
+const fakeCli = (behavior: string) => `${fixturePrelude()}const fs=require('fs'),path=require('path'),readline=require('readline');
 const dir=process.argv.includes('--session-dir')?process.argv[process.argv.indexOf('--session-dir')+1]:process.env.PI_CODING_AGENT_SESSION_DIR;fs.mkdirSync(dir,{recursive:true});
 const file=process.argv.includes('--session')?process.argv[process.argv.indexOf('--session')+1]:path.join(dir,'fake.jsonl');
 if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({type:'session',id:'fake-history',cwd:process.cwd()})+'\\n');
@@ -56,13 +57,13 @@ async function spawnWorker(behavior: string) {
   await mkdir(sessions, { recursive: true });
   const sessionFile = join(sessions, 'fake.jsonl');
   await writeFile(sessionFile, JSON.stringify({ type: 'session', id: 'fake-history', cwd: root }) + '\n');
-  const previous = process.env.PI_CONSOLE_PI_COMMAND;
-  process.env.PI_CONSOLE_PI_COMMAND = cli;
+  const previous = process.env.PI_CONSOLE_WORKER_COMMAND;
+  process.env.PI_CONSOLE_WORKER_COMMAND = cli;
   const worker = new PiProcess(root, sessionFile, sessions);
   await worker.start();
   const cleanup = async () => {
     await worker.close();
-    if (previous === undefined) delete process.env.PI_CONSOLE_PI_COMMAND; else process.env.PI_CONSOLE_PI_COMMAND = previous;
+    if (previous === undefined) delete process.env.PI_CONSOLE_WORKER_COMMAND; else process.env.PI_CONSOLE_WORKER_COMMAND = previous;
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   };
   return { worker, cleanup };

@@ -17,11 +17,11 @@ const availablePort = async () => {
   const port = probe.address().port; probe.close(); await once(probe, 'close'); return port;
 };
 
-test('installed local Pi package exposes /pi-console and connects a real isolated Pi RPC worker', { timeout: 60000 }, async () => {
+test('installed local Pi package exposes /pi-console and connects a real isolated SDK worker', { timeout: 60000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-console-package-'));
   const port = await availablePort();
   const env = { ...process.env, PI_CODING_AGENT_DIR: join(root, 'agent'), PI_CODING_AGENT_SESSION_DIR: join(root, 'sessions'),
-    PI_CONSOLE_DATA_DIR: join(root, 'data'), PI_CONSOLE_PI_COMMAND: '', PORT: String(port), PI_OFFLINE: '1',
+    PI_CONSOLE_DATA_DIR: join(root, 'data'), PI_CONSOLE_PI_COMMAND: '', PI_CONSOLE_WORKER_COMMAND: '', PORT: String(port), PI_OFFLINE: '1',
     PI_CONSOLE_PUBLIC_ORIGIN: '', PI_CONSOLE_ACCESS_TEAM_DOMAIN: '', PI_CONSOLE_ACCESS_AUD: '' };
   let rpc;
   try {
@@ -67,7 +67,7 @@ test('installed local Pi package exposes /pi-console and connects a real isolate
     const state = await (await fetch(`${base}/api/state?workspaceId=${workspace.id}&sessionId=${session.id}`)).json();
     assert.equal(state.runtime, 'running');
     assert.equal(state.session.id, session.id);
-    assert.deepEqual(state.chat, [], 'internal chunked-history command must not become a chat prompt or model call');
+    assert.deepEqual(state.chat, [], 'direct SDK history must not become a chat prompt or model call');
     await post('/api/close', { workspaceId: workspace.id, sessionId: session.id });
     await call('stop', 'prompt', { message: '/pi-console stop' });
     let stopped = false; const stopBy = Date.now() + 8000;

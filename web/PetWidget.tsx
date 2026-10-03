@@ -65,7 +65,11 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
       const motion:Motion=movementRef.current==='idle'?stateRef.current:movementRef.current;
       if(previous!==motion){frame=0;last=now;previous=motion}
       const row=motionRows[motion],count=counts[row]??8;
-      if(reduced.matches){frame=0}else if(now-last>=petFrameMs(motion,frame,!!dragRef.current)){frame=(frame+1)%count;last=now}
+      if(reduced.matches){frame=0}else if(now-last>=petFrameMs(motion,frame,!!dragRef.current)){
+        // Finish transient actions on their landing/rest pose, rather than looping
+        // or cutting a jump midway when the reaction timer expires.
+        frame=motion==='completed'||motion==='failed'?Math.min(frame+1,count-1):(frame+1)%count;last=now;
+      }
       const rowCount=pet.version===2?11:9;const cellW=image.naturalWidth/8,cellH=image.naturalHeight/rowCount;
       ctx.clearRect(0,0,el.width,el.height);ctx.imageSmoothingEnabled=false;
       ctx.drawImage(image,frame*cellW,row*cellH,cellW,cellH,0,0,el.width,el.height);
@@ -83,7 +87,7 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
       const hostEl=host.current;if(hostEl){hostEl.dataset.motion=motion;hostEl.dataset.frame=String(frame)}
       raf=requestAnimationFrame(draw);
     };
-    image.onload=()=>{if(!active)return;const n=pet.version===2?11:9;if(image.naturalWidth<8||image.naturalHeight<n||image.naturalWidth>4096||image.naturalHeight>4096||image.naturalWidth%8||image.naturalHeight%n){setPet(null);return}el.width=image.naturalWidth/8;el.height=image.naturalHeight/n;loaded=true;raf=requestAnimationFrame(draw)};
+    image.onload=()=>{if(!active)return;const n=pet.version===2?11:9;if(image.naturalWidth<8||image.naturalHeight<n||image.naturalWidth>4096||image.naturalHeight>4096||image.naturalWidth%8||image.naturalHeight%n){setPet(null);return}el.width=image.naturalWidth/8;el.height=image.naturalHeight/n;el.style.setProperty('--pet-aspect-ratio',String(el.width/el.height));loaded=true;raf=requestAnimationFrame(draw)};
     image.onerror=()=>{if(active)setPet(null)};
     image.src=pet.sheet;
     return()=>{active=false;cancelAnimationFrame(raf);image.onload=null;image.onerror=null;image.src=''};
@@ -100,7 +104,7 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
     place(saved?saved.x*Math.max(0,v.width-a.width-8)+4:preferences.petPosition==='left'?12:v.width-a.width-12,saved?saved.y*Math.max(0,v.height-a.height-8)+4:safeAutomaticY(window.matchMedia('(max-width:900px)').matches?v.height*.36:v.height-a.height-80));
     let raf=0,last=0;let vx=13,vy=9;let pauseUntil=0;let movingUntil=0;let nextMoveAt=performance.now()+1300;let anchor=saved?{...locationRef.current}:null;
     const tick=(now:number)=>{const dt=Math.min(.05,Math.max(0,(now-last)/1000));last=now;
-      if(!dragRef.current&&!document.hidden&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches&&now>pauseUntil&&(now<movingUntil||now>=nextMoveAt)){
+      if(!dragRef.current&&stateRef.current==='idle'&&!document.hidden&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches&&now>pauseUntil&&(now<movingUntil||now>=nextMoveAt)){
         if(now>=movingUntil){movingUntil=now+3400;nextMoveAt=movingUntil+4800}
         const v=viewport(),a=size(),mobile=window.matchMedia('(max-width:900px)').matches;
         const safeTop=56;let safeBottom=usableHeight()-a.height-(mobile?215:75);
@@ -123,7 +127,7 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
       raf=requestAnimationFrame(tick)
     };
     const resize=()=>{if(!dragRef.current)place(locationRef.current.x,anchor?locationRef.current.y:safeAutomaticY(locationRef.current.y))};
-    const composer=document.querySelector('.view-chat .composer-dock');const observer=composer?new ResizeObserver(resize):undefined;if(composer)observer?.observe(composer);
+    const composer=document.querySelector('.view-chat .composer-dock');const observer=new ResizeObserver(resize);observer.observe(el);if(composer)observer.observe(composer);
     window.addEventListener('resize',resize);window.visualViewport?.addEventListener('resize',resize);
     raf=requestAnimationFrame(tick);
     const down=(event:PointerEvent)=>{if(event.pointerType==='mouse'&&event.button!==0)return;event.preventDefault();const rect=el.getBoundingClientRect();dragRef.current={id:event.pointerId,dx:event.clientX-rect.left,dy:event.clientY-rect.top};movementRef.current='idle';handle.setPointerCapture(event.pointerId);el.classList.add('dragging')};
@@ -136,5 +140,5 @@ export default function PetWidget({preferences,snapshot,view}:{preferences:Conso
     return()=>{cancelAnimationFrame(raf);observer?.disconnect();window.removeEventListener('resize',resize);window.visualViewport?.removeEventListener('resize',resize);handle.removeEventListener('pointerdown',down);handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',end);handle.removeEventListener('pointercancel',end);handle.removeEventListener('lostpointercapture',end);dragRef.current=null;movementRef.current='idle'};
   },[pet,preferences.petPosition,preferences.petScale,view]);
   if(!pet)return null;
-  return <div ref={host} className="pet-widget" role="img" aria-label={`${pet.name} companion · ${state}`} title="Drag to move" ><canvas ref={canvas} style={{width:`${96*preferences.petScale}px`,height:`${104*preferences.petScale}px`}}/><div ref={hit} className="pet-hit" aria-hidden="true" style={{clipPath:'inset(100%)'}}/></div>;
+  return <div ref={host} className="pet-widget" role="img" aria-label={`${pet.name} companion · ${state}`} title="Drag to move" ><canvas ref={canvas} width={192} height={208} style={{'--pet-width':`${96*preferences.petScale}px`} as React.CSSProperties}/><div ref={hit} className="pet-hit" aria-hidden="true" style={{clipPath:'inset(100%)'}}/></div>;
 }

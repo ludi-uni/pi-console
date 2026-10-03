@@ -4,7 +4,7 @@
 
 ## Installation
 
-Requires Node.js 24+ and Pi 0.87.1+. Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
+Requires Node.js 24+ and a compatible Pi SDK (0.99.2 / 1.0.0). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
 
 ```powershell
 npm install
@@ -68,7 +68,11 @@ Standalone `npm start` / `npm run dev` still load the repository-root `.env`; th
 
 The default server binds only to `127.0.0.1` without authentication. Do not expose it through a LAN or unprotected tunnel. The separate protected remote mode requires Cloudflare Tunnel + Access, verifies signed Access JWTs on every request, and still binds only to loopback. Follow [Cloudflare Tunnel + Access](cloudflare-access.md) before configuring a hostname.
 
-Since 0.4.3 the server is an **independent background process**: `/pi-console start`, the `pi-console.ps1` CLI and Windows Startup all launch the same detached server through a shared manager, so it survives Pi exit, `/reload` and even a crashed Pi. `/pi-console stop` (or `pi-console.ps1 stop`) shuts it down from any of them. Session history is fetched through the bundled worker extension's chunked `pi-console-history-rpc` command (bounded `setWidget` records reassembled server-side), so conversations larger than the 8 MiB Pi RPC record — including a single oversized message — resume correctly. The 8 MiB record limit itself is unchanged: a single oversized **live** event record (for example a huge streaming `message_update`) is still not supported.
+Since 0.4.3 the server is an **independent background process**: `/pi-console start`, the `pi-console.ps1` CLI and Windows Startup all launch the same detached server through a shared manager, so it survives Pi exit, `/reload` and even a crashed Pi. `/pi-console stop` (or `pi-console.ps1 stop`) shuts it down from any of them. In 0.5.0 each Web session uses a Console-owned SDK worker, loading the public SDK from the selected Pi installation rather than standard CLI RPC. History comes directly from Pi's session projection, without injecting a history prompt. Bidirectional chunk transport preserves oversized final, aggregate and tool events and image-bearing commands. The existing 8 MiB JSONL parser guard is unchanged; transport frames are at most 64 KiB, with 32 KiB raw chunks, generation/sequence checks and SHA-256 integrity. Delta events omit cumulative assistant snapshots; final events retain their full content.
+
+The worker uses normal Pi user settings/resources, session storage, codemode, tool search, MCP and the Console report-safety extension. Project resources load only after trust resolution: bootstrap user-extension hooks, saved Pi trust decisions and an explicit global `defaultProjectTrust: "always"` are honored; otherwise unconfirmed projects are denied. Remembering a new trust decision through an extension is refused — confirm it in Pi CLI instead. Unsupported dialogs safely cancel, and session creation/switching/fork/tree navigation from extensions explicitly fail; use Console's session controls. Unsupported SDK versions or missing safety extensions fail startup, with no automatic legacy RPC fallback. `PI_CONSOLE_WORKER_COMMAND` is an explicit test-fixture seam, not a compatibility workaround.
+
+Transport is bounded: 192 MiB per logical JSON record, 256 MiB queued serialized output, 64 pending commands / 256 MiB pending command bytes, 60-second incomplete-transfer timeout and 15-second write timeout. There is one in-flight transfer per direction; messages are published only after complete validation. Overflow, malformed input, timeout or disconnect fails closed rather than truncating. Whole-record JSON serialization/reassembly still allocates memory; this is not a disk-spooled transport. Abort releases SDK pressure listeners without dropping queued records. Console's durable FIFO, attachment/body limits and uncertain-delivery hold/no-auto-resend rules remain unchanged.
 
 Managed state lives in the Console data directory, not the package: `server-state.json` (pid/port), `server-token` (a per-start random management secret) and `server.log` (server output). Identity verifies a fresh HMAC challenge response plus PID and start time; shutdown also requires an HMAC proof — the token is never sent on the wire. Stale management state may be safely cleared, but recycled PIDs and foreign listeners receive no shutdown request. Old or unreadable `server.lock` files are never automatically removed: remove only that lock manually after confirming that no management command is running. The manager never kills a process it cannot prove is its own, and has no signal fallback at all: a managed server that does not exit within the shutdown window is reported `stopping`, never SIGTERM'd. Management routes additionally reject requests carrying proxy/tunnel headers even with a loopback Host.
 
@@ -96,7 +100,7 @@ Pi owns chat history; the Orchestrator's existing SQLite owns kit run history. C
 
 ```powershell
 npm run build
-npm test           # unit, fake Pi HTTP, isolated local-package install and real Pi RPC handshake (no model call)
+npm test           # unit, fake Pi HTTP, isolated local-package install, SDK initialization/trust/history, large-record transport (no model call)
 npm run test:real  # actual Pi: harmless PowerShell command and a cancelled sleep
 npm run test:e2e   # Playwright + real Pi; uses installed Chrome channel
 ```

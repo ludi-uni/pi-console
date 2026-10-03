@@ -3,6 +3,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { access, lstat, realpath, stat } from 'node:fs/promises';
 import { SessionEvents } from './events.ts';
 import { historyReplay } from './history-hydration.ts';
+import { liveExecutionNodes } from '../../shared/execution-activity.ts';
 import { kitRoot, OrchestratorSource, readBoundOrchestrator } from '../adapters/orchestrator/source.ts';
 import { orchestratorKit, startKitRun, pendingKitDecisions, answerKitDecision, resumeKitRun } from '../adapters/orchestrator/start.ts';
 import { listSessions, readSession, piSessionDir, WorkspaceStore } from './workspaces.ts';
@@ -31,7 +32,7 @@ export class RuntimeManager {
   async sessions(workspaceId: string) {
     const files = await listSessions(this.workspaces.get(workspaceId), this.sessionsRoot);
     for (const active of [...this.active.values(), ...this.failed.values()]) if (active.session.workspaceId === workspaceId && !files.some(s => s.id === active.session.id)) files.unshift(active.session);
-    return files.map(s=>{const entry=this.active.get(s.id);const execution=entry?.state.execution.snapshot();return {...s,running:!!entry?.state.activeRunId||!!execution?.nodes.some(n=>n.status==='running'),decisionCount:execution?.decisionCount??0}}).sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(!!b.running)-Number(!!a.running)||(b.updatedAt??'').localeCompare(a.updatedAt??''));
+    return files.map(s=>{const entry=this.active.get(s.id);const execution=entry?.state.execution.snapshot();return {...s,running:!!entry?.state.activeRunId||!!execution&&liveExecutionNodes(execution.nodes).some(n=>n.status==='running'),decisionCount:execution?.decisionCount??0}}).sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(!!b.running)-Number(!!a.running)||(b.updatedAt??'').localeCompare(a.updatedAt??''));
   }
   async activity(): Promise<ActiveSessionSummary[]> {
     const result:ActiveSessionSummary[]=[];
@@ -39,13 +40,13 @@ export class RuntimeManager {
       const execution=entry.state.execution.snapshot();
       const job=this.kitRuns.get(entry.session.id);
       const kitRunning=job?.workspaceId===entry.session.workspaceId && job.running;
-      const liveWork=execution.nodes.filter(n=>['agent','task','orchestrator'].includes(n.kind)&&['running','waiting','blocked'].includes(n.status));
+      const liveNodes=liveExecutionNodes(execution.nodes);
+      const liveWork=liveNodes.filter(n=>['agent','task','orchestrator'].includes(n.kind));
       const recentWork=execution.nodes.filter(n=>['agent','task'].includes(n.kind)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&Date.now()-Date.parse(n.endedAt??n.updatedAt)<24*60*60*1000)
         .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,2);
       const work=[...liveWork,...recentWork].map(n=>({id:n.id,label:n.label,status:n.status,kind:n.kind,action:n.action}));
       if(kitRunning&&!work.some(n=>n.kind==='orchestrator'))work.unshift({id:`kit:${entry.session.id}`,label:'Orchestrator',status:'running',kind:'orchestrator',action:undefined});
-      const liveStatuses=['running','waiting','blocked'];
-      const running=!!entry.state.activeRunId||!!kitRunning||work.some(n=>liveStatuses.includes(n.status))||execution.nodes.some(n=>n.status==='running'&&n.kind==='tool');
+      const running=!!entry.state.activeRunId||!!kitRunning||liveNodes.some(n=>n.status==='running');
       const terminal=(n:(typeof execution.nodes)[number])=>['completed','failed','cancelled','interrupted'].includes(n.status)&&!!n.endedAt;
       const latestEnd=(nodes:typeof execution.nodes)=>nodes.filter(terminal).sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
       // Conversation completion is only a finished top-level Pi run; foreground children
@@ -61,7 +62,7 @@ export class RuntimeManager {
       ].filter((v):v is NonNullable<typeof v>=>!!v);
       const picked=candidates.sort((a,b)=>b.at.localeCompare(a.at))[0];
       const completion=picked&&Date.now()-Date.parse(picked.at)<24*60*60*1000?picked:undefined;
-      if(!running&&!execution.decisionCount&&!completion)continue;
+      if(!running&&!execution.decisionCount&&!completion&&!liveWork.length)continue;
       const workspace=this.workspaces.get(entry.session.workspaceId);
       const current=await readSession(entry.session.filePath,workspace);
       if(current?.name)entry.session.name=current.name;
@@ -112,12 +113,26 @@ export class RuntimeManager {
     // and the durable queue finish loading. A second caller must await full hydration
     // — otherwise it could mutate (e.g. enqueue into) a queue loadQueue is about to
     // overwrite.
-    const pending = this.starting.get(sessionId); if (pending) return pending;
+    const pending = this.starting.get(sessionId);
+    if (pending) {
+      const entry = await pending;
+      if (entry.session.workspaceId !== workspaceId) throw new Error('session belongs to another workspace');
+      return entry;
+    }
     const existing = this.active.get(sessionId);
     if (existing) { if (existing.session.workspaceId !== workspaceId) throw new Error('session belongs to another workspace'); return existing; }
-    const session = (await listSessions(workspace, this.sessionsRoot)).find(s => s.id === sessionId);
-    if (!session) throw new Error('session not found in workspace');
-    const start = (async () => {
+    // Register a `starting` placeholder BEFORE the async session listing, so a
+    // second open() for the same session joins this start instead of spawning a
+    // parallel worker. The deferred resolves only after full hydration (history +
+    // durable queue) completes — preserving the ordering the earlier `starting`-first
+    // check relies on. Any failure rejects the shared promise and the `finally`
+    // clears `starting`, so a later retry attempts a fresh start.
+    let resolveStart!: (entry: Active) => void, rejectStart!: (error: unknown) => void;
+    const start = new Promise<Active>((resolve, reject) => { resolveStart = resolve; rejectStart = reject; });
+    this.starting.set(sessionId, start);
+    void (async () => {
+      const session = (await listSessions(workspace, this.sessionsRoot)).find(s => s.id === sessionId);
+      if (!session) throw new Error('session not found in workspace');
       const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot);
       try {
         await worker.start();
@@ -151,9 +166,8 @@ export class RuntimeManager {
         } catch (error) { (entry as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true; entry.state.cancelQueueDrain(); this.active.delete(session.id); throw error; }
         return entry;
       } catch (error) { await worker.close(); throw error; }
-    })();
-    this.starting.set(session.id, start);
-    try { return await start; } finally { this.starting.delete(session.id); }
+    })().then(resolveStart, rejectStart);
+    try { return await start; } finally { this.starting.delete(sessionId); }
   }
   async options(workspaceId: string, sessionId: string): Promise<SessionOptions> {
     const { worker } = await this.open(workspaceId, sessionId);
@@ -531,22 +545,28 @@ export class RuntimeManager {
           const prepared = prepareAttachments(item.text, item.attachments);
           const runId = entry.state.preparePrompt(prepared.message);
           let settle: (completed: boolean) => void = () => {};
+          let failureReason: string | undefined;
           const finished = new Promise<boolean>(resolve => { settle = resolve; });
           const unsubscribe = entry.state.subscribe(event => {
-            if (event.entityId === runId && (event.type === 'RunCompleted' || event.type === 'RunFailed')) settle(event.type === 'RunCompleted');
+            if (event.entityId !== runId || (event.type !== 'RunCompleted' && event.type !== 'RunFailed')) return;
+            if (event.type === 'RunFailed') failureReason = `queued prompt was accepted by Pi, but the run ${event.status ?? 'failed'}: ${String(event.payload.summary ?? 'completion was not confirmed')}; inspect the session before resending`;
+            settle(event.type === 'RunCompleted');
           });
-          const timer = setTimeout(() => settle(false), 240000);
-          timer.unref();
           try {
             await entry.worker.call('prompt', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) });
             entry.state.accepted();
             const completed = await finished;
-            // Only a completed run confirms delivery. A refused call, a failed/
-            // cancelled/interrupted run or the settle timeout all leave the outcome
-            // uncertain → hold the item and pause the queue; never auto-resend.
-            await entry.state.finishQueueDispatch(item.id, completed, completed ? undefined : 'the queued prompt was delivered to Pi but its run did not complete; delivery effect is unconfirmed');
-          } finally { clearTimeout(timer); unsubscribe(); }
+            // Wait for an observed terminal event, not an arbitrary runtime limit:
+            // tools and subagents can legitimately take longer than four minutes.
+            // A refused/failed/cancelled/interrupted run still holds the item and
+            // pauses the queue; never auto-resend. Worker loss and shutdown emit
+            // interruption so this wait is bounded by the session's lifetime.
+            await entry.state.finishQueueDispatch(item.id, completed, completed ? undefined : failureReason);
+          } finally { unsubscribe(); }
         } catch (error) {
+          // Release a preflight-rejected pending run, just as for a manual prompt.
+          // An already-started run is untouched; the item stays held either way.
+          entry.state.rejected((error as Error).message);
           await entry.state.finishQueueDispatch(item.id, false, (error as Error).message).catch(() => {});
         }
       }

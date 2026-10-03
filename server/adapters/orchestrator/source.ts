@@ -7,7 +7,7 @@ import { pathKey } from '../../runtime/workspaces.ts';
 
 type Raw = Record<string, any>;
 const safe = (value: unknown, max = 240): string | undefined => typeof value === 'string' ? value.slice(0,max) : undefined;
-const mapStatus = (v: unknown): ExecutionStatus => ({ pending:'queued', waiting_for_user:'waiting', needs_user:'waiting', running:'running', blocked:'blocked', completed:'completed', finished:'completed', failed:'failed', cancelled:'cancelled' } as Record<string,ExecutionStatus>)[String(v)] ?? 'unknown';
+const mapStatus = (v: unknown): ExecutionStatus => ({ pending:'queued', waiting_for_user:'waiting', needs_user:'waiting', running:'running', blocked:'blocked', completed:'completed', finished:'completed', failed:'failed', cancelled:'cancelled', interrupted:'interrupted' } as Record<string,ExecutionStatus>)[String(v)] ?? 'unknown';
 export async function kitRoot(): Promise<string | undefined> {
   if (process.env.PI_CONSOLE_KIT_ROOT) return resolve(process.env.PI_CONSOLE_KIT_ROOT);
   const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(),'.pi','agent');
@@ -137,10 +137,12 @@ export class OrchestratorSource {
   }
   project(data: OrchestratorRead) {
     const {snapshot: doc,run} = data, a = doc.activity, orchId = `orchestrator:${doc.runId}`;
-    this.upsert({id:orchId,kind:'orchestrator',label:`Orchestrator ${doc.runId}`,status:mapStatus(run?.status ?? a.state),
-      correlation:'unknown',sourceKind:'orchestrator',nativeId:doc.runId,
+    const runStatus = mapStatus(run?.status ?? a.state);
+    const closed = ['completed','failed','cancelled','interrupted'].includes(runStatus);
+    this.upsert({id:orchId,kind:'orchestrator',label:`Orchestrator ${doc.runId}`,status:runStatus,
+      correlation:'unknown',sourceKind:'orchestrator',nativeId:doc.runId,details:{stateSource:run?'store':'snapshot'},
       startedAt:safe(run?.created_at ?? doc.startedAt),updatedAt:safe(run?.updated_at ?? a.updatedAt) ?? new Date().toISOString(),
-      endedAt:['completed','failed','cancelled'].includes(run?.status ?? a.state) ? safe(run?.updated_at ?? a.updatedAt) : undefined});
+      endedAt:closed ? safe(run?.updated_at ?? a.updatedAt) : undefined});
     const taskRows = data.tasks.length ? data.tasks.map(row => { try {return {row,task:JSON.parse(row.payload)}}catch{return null} }).filter((x):x is {row:Raw;task:Raw}=>!!x) : (a.tasks ?? []).map((task:Raw) => ({row:{id:task.taskId,status:task.state,updated_at:a.updatedAt},task}));
     for (const {row,task} of taskRows) {
       const id = `orch-task:${doc.runId}:${row.id}`;
@@ -165,7 +167,7 @@ export class OrchestratorSource {
       const id=`orch-agent:${doc.runId}:${t.invocationId}`;
       if (row.type==='invocation-start' || row.type==='invocation-end') {
         const previous=traceInvocations.get(id);
-        const status=row.type==='invocation-start'?'running':mapStatus(t.status);
+        const status=row.type==='invocation-start'?(closed?'unknown':'running'):mapStatus(t.status);
         const node:ExecutionNode={id,kind:'agent',label:safe(t.agent)??'agent',status,parentId:`orch-task:${doc.runId}:${t.taskId}`,correlation:'explicit',sourceKind:'orchestrator',nativeId:String(t.invocationId),
           startedAt:row.type==='invocation-start'?safe(row.at):previous?.startedAt,updatedAt:safe(row.at)??new Date().toISOString(),endedAt:row.type==='invocation-end'?safe(row.at):undefined,
           model:safe(t.modelId),provider:safe(t.provider),details:{reason:safe(t.reason)??'',toolCalls:Number(t.toolCalls??0)}};
@@ -180,7 +182,11 @@ export class OrchestratorSource {
     }
     for (const inv of a.activeInvocations ?? []) {
       if (!inv.invocationId || !inv.taskId || inv.runId !== doc.runId) continue;
-      this.upsert({id:`orch-agent:${doc.runId}:${inv.invocationId}`,kind:'agent',label:safe(inv.agent)??'agent',status:'running',parentId:`orch-task:${doc.runId}:${inv.taskId}`,correlation:'explicit',sourceKind:'orchestrator',nativeId:inv.invocationId,
+      const traced = traceInvocations.get(`orch-agent:${doc.runId}:${inv.invocationId}`);
+      if (traced?.endedAt || closed && traced) continue;
+      // A stale public snapshot cannot reopen an invocation with an observed end,
+      // nor claim ongoing work under a terminal run. Unknown is not completion.
+      this.upsert({id:`orch-agent:${doc.runId}:${inv.invocationId}`,kind:'agent',label:safe(inv.agent)??'agent',status:closed?'unknown':'running',parentId:`orch-task:${doc.runId}:${inv.taskId}`,correlation:'explicit',sourceKind:'orchestrator',nativeId:inv.invocationId,
         updatedAt:safe(a.updatedAt)??new Date().toISOString(),model:safe(inv.modelId),details:{turnsUsed:Number(inv.turnsUsed??0),toolCalls:Number(inv.toolCalls??0)}});
     }
   }

@@ -70,6 +70,65 @@ test('same text enqueues distinct ids; FIFO dispatch sends exactly one item per 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('a long-running accepted queued prompt is not held by a four-minute settle deadline', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-qlong-'));
+  // Compress only the former four-minute completion timer, not worker ACK or IO.
+  const nativeTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', ((callback: any, ms?: number, ...args: any[]) =>
+    nativeTimeout(callback, ms === 240000 ? 5 : ms, ...args)) as typeof setTimeout);
+  try {
+    const { workspace, runtime, state, calls } = await rig(root, { autoSettle: false });
+    await runtime.prompt(workspace.id, 'queue-edit-session', 'long work', [], 'followUp');
+    await runtime.prompt(workspace.id, 'queue-edit-session', 'next work', [], 'followUp');
+    settle(state); await tick(100);
+    assert.equal(state.snapshot().queue![0].status, 'dispatching');
+    assert.equal(state.snapshot().queueHeld, false);
+    assert.ok(state.activeRunId, 'Pi is still working on the accepted prompt');
+    assert.deepEqual(calls.filter(c => c.type === 'prompt').map(c => c.args.message), ['long work']);
+    settle(state); await tick();
+    assert.deepEqual(calls.filter(c => c.type === 'prompt').map(c => c.args.message), ['long work', 'next work']);
+    settle(state); await tick();
+    assert.equal(state.snapshot().queue!.length, 0);
+    await runtime.shutdown();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a real queued-run failure holds the item with its actual reason and never sends the next item', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-qrunfail-'));
+  try {
+    const { workspace, runtime, state, calls } = await rig(root, { autoSettle: false });
+    await runtime.prompt(workspace.id, 'queue-edit-session', 'failed work', [], 'followUp');
+    await runtime.prompt(workspace.id, 'queue-edit-session', 'next work', [], 'followUp');
+    settle(state); await tick();
+    state.ingest({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'provider quota exceeded' } });
+    state.ingest({ type: 'agent_settled' }); await tick();
+    assert.equal(state.snapshot().queueHeld, true);
+    assert.equal(state.snapshot().queue![0].status, 'held');
+    assert.match(state.snapshot().queue![0].error!, /provider quota exceeded/);
+    assert.equal(state.snapshot().queue![1].status, 'pending');
+    assert.equal(calls.filter(c => c.type === 'prompt').length, 1);
+    await runtime.shutdown();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('shutdown interrupts an accepted queue run and releases its completion waiter without resending', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-qshutdown-'));
+  try {
+    const { workspace, runtime, state, calls } = await rig(root, { autoSettle: false });
+    await runtime.prompt(workspace.id, 'queue-edit-session', 'active work', [], 'followUp');
+    await runtime.prompt(workspace.id, 'queue-edit-session', 'next work', [], 'followUp');
+    settle(state); await tick();
+    const runId = state.activeRunId;
+    await runtime.shutdown(); await tick();
+    assert.equal(state.activeRunId, undefined);
+    assert.ok(state.events.some(event => event.type === 'RunFailed' && event.entityId === runId && event.status === 'interrupted'));
+    assert.equal(state.snapshot().queue![0].status, 'held');
+    assert.equal(state.snapshot().queue![1].status, 'pending');
+    assert.equal(calls.filter(c => c.type === 'prompt').length, 1);
+    assert.equal(state.isQueueDispatching(), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('CAS: stale revision 409s; claim during edit attempt 409s; dispatch regenerates wrappers and keeps images', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-console-qcas-'));
   try {
@@ -159,6 +218,40 @@ test('failed dispatch holds the item and pauses the queue — no automatic resen
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('preflight rejection releases pending run; explicit Resume retries FIFO and removing a held item allows manual send', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-qreject-'));
+  const options = { failDispatch: true, autoSettle: false };
+  try {
+    const { workspace, runtime, state, calls, session } = await rig(root, options);
+    await runtime.prompt(workspace.id, session.id, 'rejected once', [], 'followUp');
+    await runtime.prompt(workspace.id, session.id, 'next item', [], 'followUp');
+    settle(state); await tick();
+    assert.equal(state.busy, false);
+    assert.equal(state.activeRunId, undefined);
+    assert.equal(state.snapshot().queue![0].status, 'held');
+    assert.equal(state.snapshot().queueHeld, true);
+    await tick();
+    assert.equal(calls.filter(c => c.type === 'prompt').length, 1, 'no automatic retry');
+    options.failDispatch = false;
+    await runtime.resumeQueuedPrompts(workspace.id, session.id); await tick();
+    assert.deepEqual(calls.filter(c => c.type === 'prompt').map(c => c.args.message), ['rejected once', 'rejected once']);
+    assert.equal(state.snapshot().queue![0].status, 'dispatching');
+    settle(state); await tick();
+    assert.equal(calls.filter(c => c.type === 'prompt').at(-1)!.args.message, 'next item');
+    settle(state); await tick();
+    assert.equal(state.snapshot().queue!.length, 0);
+    state.preparePrompt('another run'); state.accepted();
+    options.failDispatch = true;
+    await runtime.prompt(workspace.id, session.id, 'remove after rejection', [], 'followUp');
+    settle(state); await tick();
+    await runtime.removeQueuedPrompt(workspace.id, session.id, state.snapshot().queue![0].id);
+    options.failDispatch = false;
+    await runtime.prompt(workspace.id, session.id, 'manual send');
+    assert.equal(calls.filter(c => c.type === 'prompt').at(-1)!.args.message, 'manual send');
+    settle(state); await runtime.shutdown();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('idle prompt refuses while queue non-empty; enqueued items persist before ack', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-console-qidle-'));
   const queueDir = join(root, 'queue');
@@ -229,6 +322,25 @@ test('restart restores every item as held (pending too), persists pause, no auto
     await tick();
     assert.match(await readFile(join(queueDir, 'queue-edit-session.json'), 'utf8'), /persisted edit/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('failed Resume persistence restores every original status and reason without dispatching', async () => {
+  const state = new SessionEvents({ id: 'resume-rollback', workspaceId: 'w', filePath: 'unused' }, () => 'running');
+  const first = await state.enqueueFollowUp('held instruction', []);
+  await state.beginQueueDispatch(); await state.finishQueueDispatch(first.id, false, 'provider quota exceeded');
+  await state.enqueueFollowUp('pending instruction', []);
+  let refuse = true;
+  state.setQueueStore({ save: async () => { if (refuse) throw new Error('disk write refused'); } } as unknown as QueueStore);
+  const before = state.snapshot();
+  await assert.rejects(state.resumeQueue(), /disk write refused/);
+  assert.deepEqual(state.snapshot().queue, before.queue);
+  assert.equal(state.snapshot().queueHeld, true);
+  assert.equal(await state.beginQueueDispatch(), undefined, 'failed Resume never claims or sends');
+  refuse = false;
+  await state.resumeQueue();
+  assert.equal(state.snapshot().queueHeld, false);
+  assert.ok(state.snapshot().queue!.every(item => item.status === 'pending' && item.error === undefined));
+  assert.equal((await state.beginQueueDispatch())!.id, first.id, 'successful Resume preserves FIFO');
 });
 
 test('corrupt or invalid persisted queue fails closed — never loads as empty', async () => {

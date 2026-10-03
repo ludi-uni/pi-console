@@ -5,6 +5,8 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { JsonlParser } from './parser.ts';
+import { FrameDecoder, TransportWriter } from '../../../package/worker-transport.mjs';
+import { resolvePiSdk } from '../../../package/pi-sdk-resolver.mjs';
 import type { ProcessState } from '../../../shared/types.ts';
 
 type RecordValue = Record<string, any>;
@@ -19,110 +21,95 @@ export function transition(state: ProcessState, next: ProcessState): ProcessStat
 export function piExecutable(): string {
   const override = process.env.PI_CONSOLE_PI_COMMAND;
   if (override) { if (!isAbsolute(override) || !existsSync(override)) throw new Error('PI_CONSOLE_PI_COMMAND must be an absolute existing CLI script'); return override; }
-  const roots = [process.env.APPDATA && join(process.env.APPDATA, 'npm', 'node_modules'),
-    join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.npm-global', 'lib', 'node_modules'),
-    '/usr/local/lib/node_modules'];
+  const roots = [process.env.APPDATA && join(process.env.APPDATA, 'npm', 'node_modules'), join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.npm-global', 'lib', 'node_modules'), '/usr/local/lib/node_modules'];
   const file = roots.filter(Boolean).map(root => join(root!, '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js')).find(existsSync);
   if (!file) throw new Error('Pi CLI not found; set PI_CONSOLE_PI_COMMAND to its cli.js path');
   return file;
 }
-
-// Ships a tiny extension into every spawned worker. It enforces (inside Pi, not by prompt) the
-// tool-free report reply the console requests around saveKitReportToPi; without it Pi could run
-// arbitrary tools while replaying an orchestrator report into the session.
 export function consoleExtension(): string {
   const file = fileURLToPath(new URL('../../../extensions/pi-console-session.mjs', import.meta.url));
   if (!existsSync(file)) throw new Error('Pi Console report safety extension is missing');
   return file;
 }
-
-// Chunked history transport: the worker-side extension serializes the projected session
-// messages and emits them as correlated single-line setWidget records, each safely under
-// both the 64 KiB widget line bound and the 8 MiB JSONL parser limit. Reassembled here.
-const HISTORY_PREFIX = 'PI_CONSOLE_HISTORY_JSON:';
-const HISTORY_CHUNK_MAX = 65536;      // widgetLines entry bound
-const HISTORY_TOTAL_MAX = 192 * 1024 * 1024; // absolute base64 payload bound
-
 export class PiProcess {
   state: ProcessState = 'stopped';
   private child?: ChildProcessWithoutNullStreams;
-  private pending = new Map<string, { resolve: (r: RecordValue) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private writer?: TransportWriter;
+  private decoder?: FrameDecoder;
+  private pending = new Map<string, { resolve: (r: RecordValue) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; onStart?: () => void }>();
   private inspections = new Map<string, { resolve: (r: RecordValue) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  private serial = Promise.resolve();
   private seq = 0;
   private intendedStop = false;
   private stderr = '';
-  // Settled once the OS reports the child 'close' event (stdio flushed), or rejected on a
-  // spawn-level 'error' when no close ever arrives. Registered at spawn time so close()
-  // never waits on a 'close' that already fired — previously a CLI exiting before the
-  // startup get_state/get_messages replies made close() hang forever and left
-  // RuntimeManager.open's `starting` entry pinned until its finally ran.
   private closed = Promise.resolve();
   private exited = false;
+  private readyResolve?: () => void;
+  private readyReject?: (error: Error) => void;
+  private sessionId?: string;
+  private handshakeReceived = false;
+  private expectedSdkVersion?: string;
   onRecord: (record: RecordValue) => void = () => {};
   onState: (state: ProcessState, reason?: string) => void = () => {};
-  // Chunked history snapshots (pi-console-history-rpc) are correlated by requestId and
-  // reassembled below; they never reach the execution event stream.
-  private histories = new Map<string, { resolve: (m: RecordValue[]) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; chunks: (string | undefined)[]; total: number; got: number; bytes: number; onSnapshotStart?: () => void }>();
   constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string) {}
   private set(next: ProcessState, reason?: string) { this.state = transition(this.state, next); this.onState(this.state, reason); }
   async start(): Promise<void> {
     if (this.state !== 'stopped') throw new Error('worker already started');
     this.set('starting');
-    const parser = new JsonlParser();
+    const parser = new JsonlParser(); // The physical 8 MiB guard is deliberately unchanged.
+    const generation = randomUUID();
+    const ready = new Promise<void>((resolve, reject) => { this.readyResolve = resolve; this.readyReject = reject; });
+    void ready.catch(() => {});
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const args = [piExecutable(), '--mode', 'rpc', '--extension', consoleExtension(), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
+      // Explicit test seam, never an automatic fallback from an unsupported SDK.
+      const fixture = process.env.PI_CONSOLE_WORKER_COMMAND || undefined;
+      if (fixture && (!isAbsolute(fixture) || !existsSync(fixture))) throw new Error('PI_CONSOLE_WORKER_COMMAND must be an absolute existing worker script');
+      const sdk = fixture ? undefined : resolvePiSdk(piExecutable());
+      this.expectedSdkVersion = sdk?.version;
+      const entry = fixture ?? fileURLToPath(new URL('../../../package/sdk-worker.mjs', import.meta.url));
+      const args = [entry, '--generation', generation, '--extension', consoleExtension(), ...(sdk ? ['--sdk-entry', sdk.entry, '--sdk-version', sdk.version] : []), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
       const child = spawn(process.execPath, args, { cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
-      // only once(child,'close') counts as a real exit; a bare 'error' without 'close'
-      // rejects this promise so close() falls back to waiting instead of a false settle.
+      child.stdin.on('error', error => { if (!this.intendedStop) { this.fail(error); child.kill(); } });
+      this.writer = new TransportWriter(child.stdin, generation);
+      this.decoder = new FrameDecoder({ generation, onStart: meta => { if (meta.type === 'response' && meta.id) this.pending.get(meta.id)?.onStart?.(); }, onError: error => { this.fail(error); child.kill(); } });
       this.closed = new Promise<void>((resolve, reject) => {
         child.once('close', () => { this.exited = true; resolve(); });
         child.once('error', error => { if (!this.exited) reject(error); });
       });
-      this.closed.catch(() => {});
+      void this.closed.catch(() => {});
       child.stderr.on('data', (data: Buffer) => { this.stderr = (this.stderr + data.toString('utf8')).slice(-4096); });
       child.stdout.on('data', (data: Buffer) => {
-        try { for (const record of parser.push(data) as RecordValue[]) this.handle(record); }
+        try { for (const frame of parser.push(data)) { const record = this.decoder!.accept(frame); if (record) this.handle(record); } }
         catch (error) { this.fail(error as Error); child.kill(); }
       });
       child.on('error', error => this.fail(error));
       child.on('close', (code, signal) => {
-        try { parser.finish(); } catch (error) { this.fail(error as Error); }
+        this.writer?.close();
+        try { parser.finish(); this.decoder?.finish(); } catch (error) { this.fail(error as Error); }
+        this.decoder?.close();
         if (this.state === 'failed') return;
-        if (this.intendedStop) { if (this.state === 'stopping') this.set('stopped'); else if (this.state !== 'stopped') { this.set('stopping'); this.set('stopped'); } }
-        else this.fail(new Error(`Pi exited unexpectedly (${code ?? signal}); ${this.stderr.slice(-500)}`));
+        if (this.intendedStop) { if (this.state === 'stopping') this.set('stopped'); }
+        else this.fail(new Error(`Pi SDK worker exited unexpectedly (${code ?? signal}); ${this.stderr.slice(-500)}`));
       });
       await once(child, 'spawn');
-      // Spawn succeeded but the CLI may already have exited (or be about to) before the
-      // first RPC reply. Any pending call still settles via fail() on 'close'.
+      timer = setTimeout(() => { const error = new Error(`Pi SDK worker startup timed out; ${this.stderr.slice(-500)}`); this.fail(error); child.kill(); }, 60000);
+      await ready;
       this.set('running');
     } catch (error) { this.fail(error as Error); throw error; }
+    finally { if (timer) clearTimeout(timer); this.readyResolve = undefined; this.readyReject = undefined; }
   }
   private fail(error: Error) {
     if (this.state !== 'failed' && this.state !== 'stopped') this.set('failed', error.message);
+    this.readyReject?.(error); this.writer?.close(); this.decoder?.close();
     for (const [id, task] of this.pending) { clearTimeout(task.timer); task.reject(error); this.pending.delete(id); }
     for (const [id, task] of this.inspections) { clearTimeout(task.timer); task.reject(error); this.inspections.delete(id); }
-    for (const [id, task] of this.histories) { clearTimeout(task.timer); task.reject(error); this.histories.delete(id); }
-  }
-  private rejectHistory(requestId: string, reason: string) {
-    const task = this.histories.get(requestId);
-    if (task) { this.histories.delete(requestId); clearTimeout(task.timer); task.reject(new Error(`Pi history snapshot failed: ${reason}`)); }
-  }
-  private finishHistory(requestId: string) {
-    const task = this.histories.get(requestId);
-    if (!task) return;
-    this.histories.delete(requestId); clearTimeout(task.timer);
-    try {
-      const decoded = JSON.parse(Buffer.from(task.chunks.join(''), 'base64').toString('utf8'));
-      if (decoded?.kind !== 'pi-console.history' || decoded.version !== 1 || !Array.isArray(decoded.messages) || typeof decoded.requestId !== 'string')
-        throw new Error('invalid history snapshot payload');
-      if (decoded.requestId !== requestId) throw new Error('history snapshot identity mismatch');
-      if (decoded.dirty === true) throw new Error('session changed while the history snapshot was taken; retry');
-      task.resolve(decoded.messages);
-    } catch (error) { task.reject(error instanceof Error ? error : new Error(String(error))); }
   }
   private handle(record: RecordValue) {
+    if (record.type === 'console_ready') {
+      if (!this.readyResolve || this.handshakeReceived || this.expectedSdkVersion && (record.sdkVersion !== this.expectedSdkVersion || typeof record.sessionId !== 'string' || !record.sessionId) || record.protocolVersion !== 1 || !Array.isArray(record.capabilities) || !['chunked-records', 'direct-history', 'preflight-ack'].every(c => record.capabilities.includes(c))) throw new Error('Invalid SDK worker ready handshake');
+      this.handshakeReceived = true; this.sessionId = record.sessionId; this.readyResolve(); return;
+    }
     if (record.type === 'extension_ui_request' && record.method === 'setWidget' && record.widgetKey === 'subagent-inspect') {
       const line = record.widgetLines?.[0];
       if (Array.isArray(record.widgetLines) && record.widgetLines.length === 1 && typeof line === 'string' && line.length <= 65536 && line.startsWith('PI_SUBAGENT_INSPECT_JSON:')) {
@@ -131,139 +118,76 @@ export class PiProcess {
             const task = this.inspections.get(reply.requestId);
             if (task) { this.inspections.delete(reply.requestId); clearTimeout(task.timer); task.resolve(reply); }
           }
-        } catch { /* Invalid or unrelated extension widget; let the request time out. */ }
-        return; // Inspection content is private to the requesting HTTP call, not an execution event.
+        } catch { /* Let invalid widgets time out without leaking inspection contents. */ }
       }
-      return; // Inspection content is private to the requesting HTTP call, not an execution event.
+      return;
     }
-    if (record.type === 'extension_ui_request' && record.method === 'setWidget' && record.widgetKey === 'pi-console-history') {
-      const line = record.widgetLines?.[0];
-      if (Array.isArray(record.widgetLines) && record.widgetLines.length === 1 && typeof line === 'string' && line.length <= 65536 && line.startsWith(HISTORY_PREFIX)) {
-        try {
-          const chunk = JSON.parse(line.slice(HISTORY_PREFIX.length));
-          if (chunk.kind === 'pi-console.history-chunk' && chunk.version === 1 && typeof chunk.requestId === 'string') {
-            const task = this.histories.get(chunk.requestId);
-            if (task) {
-              // First chunk declares total; every later chunk must agree.
-              if (task.total === -1) {
-                if (!Number.isSafeInteger(chunk.total) || chunk.total < 1 || chunk.total > 1_000_000) { this.rejectHistory(chunk.requestId, 'invalid history chunk count'); return; }
-                task.total = chunk.total; task.chunks = new Array(chunk.total);
-                task.onSnapshotStart?.();
-              }
-              if (!Number.isSafeInteger(chunk.seq) || chunk.seq < 0 || chunk.seq >= task.total || task.chunks[chunk.seq] !== undefined ||
-                  chunk.total !== task.total || typeof chunk.data !== 'string' || chunk.data.length > HISTORY_CHUNK_MAX || !/^[A-Za-z0-9+/=]*$/.test(chunk.data)) {
-                this.rejectHistory(chunk.requestId, 'malformed history chunk');
-              } else {
-                task.bytes += chunk.data.length;
-                if (task.bytes > HISTORY_TOTAL_MAX) this.rejectHistory(chunk.requestId, 'history snapshot exceeds resource bound');
-                else { task.chunks[chunk.seq] = chunk.data; if (++task.got === task.total) this.finishHistory(chunk.requestId); }
-              }
-            }
-          }
-        } catch { /* Invalid or unrelated widget; let the request time out. */ }
-      }
-      return; // History chunks are private to the requesting call, not execution events.
-    }
-    if (record.type === 'response' && typeof record.id === 'string' && this.pending.has(record.id)) {
-      const task = this.pending.get(record.id)!; this.pending.delete(record.id); clearTimeout(task.timer);
-      record.success ? task.resolve(record) : task.reject(new Error(String(record.error ?? 'RPC rejected')));
+    if (record.type === 'extension_ui_request' && record.widgetKey === 'pi-console-history') return;
+    if (record.type === 'response' && typeof record.id === 'string') {
+      const task = this.pending.get(record.id);
+      if (task) { this.pending.delete(record.id); clearTimeout(task.timer); record.success ? task.resolve(record) : task.reject(new Error(String(record.error ?? 'SDK operation rejected'))); }
       return;
     }
     if (record.type === 'extension_ui_request' && ['select', 'confirm', 'input', 'editor'].includes(record.method)) {
-      // Phase 1 has no interactive extension UI; fail closed rather than hang Pi.
-      void this.write({ type: 'extension_ui_response', id: record.id, cancelled: true }).catch(() => {});
-      this.onRecord({ type: 'console_dialog_cancelled', method: record.method });
-      return;
+      this.onRecord({ type: 'console_dialog_cancelled', method: record.method }); return;
     }
     this.onRecord(record);
   }
   private write(command: RecordValue): Promise<void> {
-    const task = this.serial.then(async () => {
-      if (!this.child || this.state !== 'running') throw new Error('Pi not running');
-      if (!this.child.stdin.write(JSON.stringify(command) + '\n')) await once(this.child.stdin, 'drain');
-    });
-    this.serial = task.catch(() => {});
-    return task;
+    if (!this.writer || this.state !== 'running') return Promise.reject(new Error('Pi not running'));
+    return this.writer.send(command);
   }
-  async call(type: string, fields: RecordValue = {}, timeoutMs = 30000): Promise<RecordValue> {
+  async call(type: string, fields: RecordValue = {}, timeoutMs = 30000, onStart?: () => void): Promise<RecordValue> {
     const id = `console-${++this.seq}`;
     if (this.state !== 'running') throw new Error('Pi not running');
     const result = new Promise<RecordValue>((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`RPC ${type} timed out`)); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`SDK ${type} timed out`)); }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer, onStart });
     });
-    try { await this.write({ id, type, ...fields }); } catch (error) {
+    void result.catch(() => {});
+    try { await this.write({ ...fields, id, type }); } catch (error) {
       const task = this.pending.get(id); if (task) { clearTimeout(task.timer); this.pending.delete(id); task.reject(error as Error); }
     }
     return result;
   }
-  /**
-   * Full conversation history without the 8 MiB single-record limit.
-   * The bundled worker extension (consoleExtension(), always passed via --extension) exposes
-   * `pi-console-history-rpc`, which snapshots ctx.sessionManager.buildSessionProjection().messages
-   * (exact Pi branch + compaction + context-edit semantics, the same list get_messages returns
-   * for a settled session) and streams it back as correlated, bounded setWidget chunks.
-   * No fallback to one-shot get_messages: that record can exceed the 8 MiB parser limit and
-   * kill the worker, so a missing command means a broken install, not a degraded mode.
-   */
   async getMessages(timeoutMs = 60000, onSnapshotStart?: () => void): Promise<RecordValue[]> {
     const commands = (await this.call('get_commands')).data?.commands;
-    if (!Array.isArray(commands) || !commands.some((c: RecordValue) => c.name === 'pi-console-history-rpc' && c.source === 'extension'))
-      throw new Error('Pi Console history command missing; the bundled worker extension did not load');
-    const requestId = randomUUID().replaceAll('-', '');
-    const done = new Promise<RecordValue[]>((resolve, reject) => {
-      const timer = setTimeout(() => this.rejectHistory(requestId, 'history snapshot timed out'), timeoutMs);
-      timer.unref?.();
-      this.histories.set(requestId, { resolve, reject, timer, chunks: [], total: -1, got: 0, bytes: 0, onSnapshotStart });
-    });
-    void done.catch(() => {});
-    try {
-      await this.call('prompt', { message: `/pi-console-history-rpc ${requestId}` }, Math.min(timeoutMs, 30000));
-      return await done;
-    } catch (error) {
-      this.rejectHistory(requestId, (error as Error).message);
-      throw error;
-    }
+    if (!Array.isArray(commands) || !commands.some((c: RecordValue) => c.name === 'pi-console-history-rpc' && c.source === 'extension')) throw new Error('Pi Console history command missing; the bundled safety extension did not load');
+    const data = (await this.call('get_history', {}, timeoutMs, onSnapshotStart)).data;
+    if (!data || !Array.isArray(data.messages) || typeof data.sessionId !== 'string' || this.sessionId && data.sessionId !== this.sessionId) throw new Error('Invalid SDK history snapshot identity');
+    if (data.dirty) throw new Error('session changed while the history snapshot was taken; retry');
+    return data.messages;
   }
   async inspectSubagent(asyncId: string, childId?: string): Promise<RecordValue> {
     const safe = (id: string) => /^[A-Za-z0-9_.:-]{1,256}$/.test(id);
     if (!safe(asyncId) || childId !== undefined && !safe(childId)) throw new Error('subagent ID cannot be inspected through Pi RPC');
     const commands = (await this.call('get_commands')).data?.commands;
-    if (!Array.isArray(commands) || !commands.some((command: RecordValue) => command.name === 'subagents-inspect-rpc' && command.source === 'extension')) throw new Error('This Pi session does not provide background subagent inspection');
+    if (!Array.isArray(commands) || !commands.some((c: RecordValue) => c.name === 'subagents-inspect-rpc' && c.source === 'extension')) throw new Error('This Pi session does not provide background subagent inspection');
     const requestId = randomUUID().replaceAll('-', '');
     const reply = new Promise<RecordValue>((resolve, reject) => {
       const timer = setTimeout(() => { this.inspections.delete(requestId); reject(new Error('Subagent inspection timed out')); }, 10000);
       this.inspections.set(requestId, { resolve, reject, timer });
     });
-    void reply.catch(() => {}); // The widget may time out before the prompt command rejects.
+    void reply.catch(() => {});
     try {
       await this.call('prompt', { message: `/subagents-inspect-rpc ${requestId} ${asyncId}${childId ? ` ${childId}` : ''} --lines 30` }, 10000);
-      const result = await reply;
-      if (result.error) throw new Error(String(result.error.message ?? 'Subagent inspection failed'));
-      return result;
+      const result = await reply; if (result.error) throw new Error(String(result.error.message ?? 'Subagent inspection failed')); return result;
     } finally {
-      const task = this.inspections.get(requestId);
-      if (task) { this.inspections.delete(requestId); clearTimeout(task.timer); task.reject(new Error('Subagent inspection cancelled')); }
+      const task = this.inspections.get(requestId); if (task) { this.inspections.delete(requestId); clearTimeout(task.timer); task.reject(new Error('Subagent inspection cancelled')); }
     }
   }
   async close(): Promise<void> {
     if (!this.child || this.state === 'stopped') return;
     this.intendedStop = true;
-    // 'starting' -> 'stopping' is valid, so a CLI that died before the first RPC reply can
-    // still be shut down cleanly; a second close() just waits on the already-tracked exit.
     if (this.state !== 'stopping') this.set('stopping');
+    for (const task of this.pending.values()) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); } this.pending.clear();
+    for (const task of this.inspections.values()) { clearTimeout(task.timer); task.reject(new Error('Subagent inspection cancelled')); } this.inspections.clear();
+    this.readyReject?.(new Error('Pi worker shutting down')); this.writer?.close();
+    try { this.child.stdin.end(); } catch { /* Pipe already closed. */ }
     const child = this.child;
-    for (const [id, task] of this.pending) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.pending.delete(id); }
-    for (const [id, task] of this.inspections) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.inspections.delete(id); }
-    for (const [id, task] of this.histories) { clearTimeout(task.timer); task.reject(new Error('Pi worker shutting down')); this.histories.delete(id); }
-    try { child.stdin.end(); } catch { /* The pipe may already be broken after an exit. */ }
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* Already gone. */ } }, 3500);
-    timer.unref?.();
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* Already gone. */ } }, 3500); timer.unref();
     await this.closed.catch(() => {}); clearTimeout(timer);
-    // The 'close' listener may have run before close() was called (exit before the first
-    // RPC reply): settle 'stopping' now so the state never remains stuck on stopping.
     if (this.state === 'stopping') this.set('stopped');
   }
-  // Test-only failure injection: still goes through OS process lifecycle.
   killForTest(): void { this.child?.kill(); }
 }

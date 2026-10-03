@@ -1,4 +1,5 @@
 import type { ExecutionEvent, ExecutionNode, ExecutionStateSnapshot, ExecutionStatus } from '../../shared/types.ts';
+import { liveExecutionNodes } from '../../shared/execution-activity.ts';
 const terminal = new Set<ExecutionStatus>(['completed','failed','cancelled','interrupted']);
 const asNode = (value: unknown): ExecutionNode | undefined => {
   if (!value || typeof value !== 'object') return;
@@ -23,7 +24,10 @@ export class ExecutionState {
     if (!node) return false;
     const previous = this.nodes.get(node.id);
     if (previous && node.updatedAt < previous.updatedAt) return false;
-    if (previous && previous.kind !== 'task' && terminal.has(previous.status) && !terminal.has(node.status) && node.sourceKind === previous.sourceKind) return false;
+    // Only a newer authoritative kit store state may reopen a terminal run.
+    // Public snapshots and late child updates must not resurrect completed work.
+    const resumed = previous && node.kind === 'orchestrator' && node.sourceKind === 'orchestrator' && node.details?.stateSource === 'store' && node.status === 'running' && node.updatedAt > previous.updatedAt;
+    if (previous && previous.kind !== 'task' && terminal.has(previous.status) && !terminal.has(node.status) && node.sourceKind === previous.sourceKind && !resumed) return false;
     const merged = { ...previous, ...node, startedAt: node.startedAt ?? previous?.startedAt, parentId: node.parentId ?? previous?.parentId };
     if (previous && JSON.stringify(previous) === JSON.stringify(merged)) return false;
     this.nodes.set(node.id, merged);
@@ -46,9 +50,10 @@ export class ExecutionState {
     for (const id of roots) visit(byId.get(id)!,0,false);
     for (const id of unattached) visit(byId.get(id)!,0,true);
     for (const node of nodes) if (!visited.has(node.id)) visit(node,0,true);
-    return { nodes, roots, unattached, rows, activeCount: nodes.filter(n => n.status === 'running' || n.status === 'waiting' || n.status === 'blocked').length,
+    const active = liveExecutionNodes(nodes);
+    return { nodes, roots, unattached, rows, activeCount: active.length,
       failedCount: nodes.filter(n => n.status === 'failed' || n.status === 'interrupted').length,
-      decisionCount: nodes.filter(n => n.kind === 'decision' && n.status === 'waiting').length };
+      decisionCount: active.filter(n => n.kind === 'decision' && n.status === 'waiting').length };
   }
   markInterrupted() {
     for (const [id,node] of this.nodes) if (node.sourceKind === 'pi' && node.status === 'running') this.nodes.set(id,{...node,status:'interrupted',updatedAt:new Date().toISOString()});
