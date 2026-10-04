@@ -13,7 +13,7 @@ export function resolvePiSdk(cli) {
       if (pkg.name === '@earendil-works/pi-coding-agent') {
         // preflightResult and awaited agent subscriptions are version-sensitive.
         // Expand this explicit compatibility list only with no-provider contract tests.
-        if (!['0.99.2', '1.0.0'].includes(pkg.version)) throw new Error(`Unsupported Pi SDK ${pkg.version}; Console SDK worker currently supports 0.99.2 / 1.0.0. Update the selected Pi installation (PI_CONSOLE_PI_COMMAND) to a supported version.`);
+        if (!['0.99.2', '1.0.0', '1.0.2'].includes(pkg.version)) throw new Error(`Unsupported Pi SDK ${pkg.version}; Console SDK worker currently supports 0.99.2 / 1.0.0 / 1.0.2. Update the selected Pi installation (PI_CONSOLE_PI_COMMAND) to a supported version.`);
         const entry = pkg.exports?.['.']?.import;
         if (typeof entry !== 'string' || !entry.startsWith('./')) throw new Error('Pi SDK public import export unavailable');
         const path = resolve(dir, entry);

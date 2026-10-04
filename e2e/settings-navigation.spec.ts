@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,7 +41,7 @@ test('settings: sections, local preferences, mobile browser Back through session
     await expect(page.getByLabel('Default session view')).toHaveValue('execution');
     await page.getByRole('button',{name:'← 設定'}).click();
     await page.getByRole('button',{name:'← 戻る'}).click();
-    await page.getByLabel('Workspace path').fill(cwd);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(cwd);
     await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.getByRole('button',{name:'New Session'})).toBeVisible();
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');

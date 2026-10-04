@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,7 @@ test('mobile resume and focus follow latest; thought, command, and software info
   const root=await mkdtemp(join(tmpdir(),'pi-console-mobile-details-'));
   try {
     await page.setViewportSize({width:390,height:780});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const session=(await (await created).json()).session;

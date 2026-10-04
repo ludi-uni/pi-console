@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,7 @@ test('empty mobile sessions foreground creation and explain costs before a run',
   try {
     await page.setViewportSize({width:390,height:844});
     await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);
     await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.getByText('No sessions yet. Select New Session to start.')).toBeVisible();
     await expect(page.getByRole('button',{name:'New Session'})).toBeVisible();
@@ -28,6 +29,7 @@ test('empty mobile sessions foreground creation and explain costs before a run',
     await page.getByRole('button',{name:'← Chat'}).click();
     await page.getByRole('button',{name:'← Sessions'}).click();
     await expect(page.getByLabel('Search sessions')).toBeVisible();
-    await expect(page.getByLabel('Session',{exact:true})).toBeVisible();
+    await expect(page.getByLabel('Session',{exact:true})).toHaveCount(0);
+    await expect(page.getByLabel('Session list')).toBeVisible();
   } finally { await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:300}).catch(()=>{}); }
 });

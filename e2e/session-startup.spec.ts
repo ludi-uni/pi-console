@@ -1,4 +1,5 @@
 import {test,expect} from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -8,7 +9,7 @@ test('new session shows startup progress, prevents duplicate requests, and recov
   let release=()=>{};const pending=new Promise<void>(resolve=>{release=resolve});let requests=0;
   try{
     await page.setViewportSize({width:390,height:780});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);
     await page.getByRole('button',{name:'Add & open'}).click();
     await page.route('**/api/sessions',async route=>{
       if(route.request().method()!=='POST')return route.continue();

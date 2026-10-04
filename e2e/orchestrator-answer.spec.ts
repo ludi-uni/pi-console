@@ -1,4 +1,5 @@
 import {test,expect} from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -14,7 +15,7 @@ test('mobile Execution answers an exact kit question without sending a Pi prompt
   await page.route('**/api/prompt',route=>{piPrompts++;void route.abort()});
   try{
     await page.setViewportSize({width:390,height:780});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     await page.getByRole('button',{name:'New Session'}).click();
     await page.getByRole('button',{name:/Execution ·/}).click();
     const question=page.getByRole('region',{name:'Orchestrator questions'});

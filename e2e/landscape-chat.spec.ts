@@ -30,8 +30,9 @@ test('short landscape keeps the conversation visible while the composer remains 
     const prompt=page.getByRole('textbox',{name:'Prompt',exact:true}),send=page.getByRole('button',{name:'Send',exact:true});
     await expect(prompt).toBeVisible();await expect(send).toBeVisible();
     const controls=page.getByRole('button',{name:'Model / Thinking'});
-    await controls.click();
+    // Focus-on-open requires the SDK options to have loaded, not a disabled select.
     await expect(page.getByLabel('Model',{exact:true})).toBeEnabled({timeout:15000});
+    await controls.click();
     await expect(page.getByLabel('Model',{exact:true})).toBeFocused();
     await expect(page.getByLabel('Thinking',{exact:true})).toBeVisible();
     await page.screenshot({path:join(tmpdir(),'pi-console-landscape-controls-verified.png')});

@@ -23,6 +23,8 @@ test('session settings allow server-side retention days and manual recycling rem
     await page.screenshot({path:join(tmpdir(),'pi-console-retention-settings-mobile.png'),fullPage:true});
     await page.getByRole('button',{name:'← Settings'}).click();await page.getByRole('button',{name:'← Back'}).click();
     await page.locator('.workspace-card').filter({hasText:root}).click();
+    await expect(page.getByRole('button',{name:'Move New conversation to Recycle Bin'})).not.toBeVisible();
+    await page.getByRole('button',{name:'Session menu for New conversation',exact:true}).click();
     await expect(page.getByRole('button',{name:'Move New conversation to Recycle Bin'})).toBeVisible();
     await page.screenshot({path:join(tmpdir(),'pi-console-session-recycle-mobile.png'),fullPage:true});
     page.once('dialog',dialog=>dialog.accept());

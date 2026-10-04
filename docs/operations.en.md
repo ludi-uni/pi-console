@@ -4,7 +4,7 @@
 
 ## Installation
 
-Requires Node.js 24+ and a compatible Pi SDK (0.99.2 / 1.0.0). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
+Requires Node.js 24+ and a compatible Pi SDK (0.99.2 / 1.0.0 / 1.0.2). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
 
 ```powershell
 npm install
@@ -84,11 +84,16 @@ Managed state lives in the Console data directory, not the package: `server-stat
 | --- | --- |
 | Pi package / Windows Startup workspace registrations and quick prompts | `~/.pi/agent/pi-console/workspaces.json`, or under `PI_CODING_AGENT_DIR`; override explicitly with `PI_CONSOLE_DATA_DIR`. |
 | Console-owned queued prompts | `queue/<sessionId>.json` in the same directory; includes prompt and attachment contents. Restart restores held items requiring explicit Resume. |
+| Prompt delivery receipts | `prompt-receipts/<requestId>.json` in the same directory; stores a payload hash and acknowledgement outcome, not prompt or attachment contents. Prevents redispatching the same request ID across restarts. |
 | Automatic session cleanup settings | `session-retention.json` in the same stable data directory. |
 | Managed-server state, token and log | `server-state.json`, `server-token`, `server.log` in the same directory; the token is a local-only random secret, regenerated every start. |
 | Standalone `npm start` | `.pi-console/` in the working directory by default. |
 | Pi conversations | Pi's session directory; override with `PI_CODING_AGENT_SESSION_DIR`. Browser reconnects do not remove them. |
 | Appearance and other browser preferences | Stored in the browser; not shared with pi-web. |
+
+If a submission loses its HTTP acknowledgement, the browser displays an unconfirmed-delivery warning. **Check delivery · same request** uses the persisted request ID, text and attachments rather than creating another submission. If the server could not persist the acknowledgement, it refuses to dispatch that request again and requires history inspection and explicit manual resolution. Receipts are not automatically removed; deleting them removes deduplication for old requests. Legacy API clients that omit the request ID do not get this deduplication.
+
+Browser drafts also retain unacknowledged submissions. Cross-tab writes compare revisions, preventing stale tabs from overwriting newer drafts. A conflicting tab keeps its local text and files in memory and asks before loading the saved draft. Copy unsaved input somewhere safe before choosing **Load saved draft**.
 
 **Before upgrading an older Windows Startup installation, follow the [backup and migration procedure](upgrade-storage.md).** npm may remove the former package-local `.pi-console/` before new code can read it.
 
@@ -103,7 +108,10 @@ npm run build
 npm test           # unit, fake Pi HTTP, isolated local-package install, SDK initialization/trust/history, large-record transport (no model call)
 npm run test:real  # actual Pi: harmless PowerShell command and a cancelled sleep
 npm run test:e2e   # Playwright + real Pi; uses installed Chrome channel
+npm run test:compat # mocked UI smoke tests: Chrome / Firefox / WebKit (no model call)
 ```
+
+`test:compat` starts a dedicated Vite server (`127.0.0.1:31719`) and mocks APIs and SSE. It does not start the Console server, Pi workers or models. It checks text/attachment submission, draft restoration, navigation and unavailable speech recognition, notification and clipboard APIs at desktop, portrait and landscape viewport sizes. Chrome uses the installed channel; Firefox / WebKit require binaries matching the current Playwright version. If missing or mismatched, install them with `npx playwright install firefox webkit`. To check Chrome alone, use `npm run test:compat -- --project=chromium`. Passing WebKit does not establish physical Safari / iOS verification.
 
 `test:real` and `test:e2e` may invoke a configured provider and incur a small model charge. To check the actual installed kit's decision/continuation API without a model call, use the opt-in isolated test below. It copies the kit to a temporary directory and fails if a model invocation is attempted.
 

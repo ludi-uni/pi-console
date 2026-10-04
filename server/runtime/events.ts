@@ -14,13 +14,19 @@ function toolInfo(value: Raw): ChatTool {
   const args = value.arguments ?? value.args;
   const key = args && typeof args === 'object' && !Array.isArray(args) ? ['command','program','script','code','path','file'].find(k => typeof args[k] === 'string') : undefined;
   const command = key ? String(args[key]) : undefined;
-  return { id: String(value.id ?? ''), name: String(value.name ?? value.toolName ?? 'tool').slice(0,100), ...(command !== undefined ? {command:command.slice(0,4000),truncated:command.length>4000} : {}) };
+  let input: string | undefined;
+  if (command === undefined && args !== undefined) { try { input = JSON.stringify(args, null, 2)?.slice(0,4000); } catch { /* Invalid input must not hide the result. */ } }
+  return { id: String(value.id ?? ''), name: String(value.name ?? value.toolName ?? 'tool').slice(0,100), ...(command !== undefined ? {command:command.slice(0,4000),truncated:command.length>4000} : {}), ...(input?{input}:{}) };
 }
 export function assistantContent(message: Raw): Pick<ChatMessage,'text'|'thinking'|'tools'> {
   const blocks = Array.isArray(message.content) ? message.content : [];
   const thinking = blocks.filter((block:Raw)=>block.type==='thinking'&&typeof block.thinking==='string').map((block:Raw)=>block.thinking).join('\n').slice(0,16000);
   const tools = blocks.filter((block:Raw)=>block.type==='toolCall').slice(0,64).map(toolInfo);
-  return { text:text(message), ...(thinking?{thinking}:{}), ...(tools.length?{tools}:{}) };
+  return { text:text(message), ...(thinking.trim()?{thinking}:{}), ...(tools.length?{tools}:{}) };
+}
+function toolOutput(result: Raw): Pick<ChatTool, 'output' | 'outputTruncated'> {
+  const output = typeof result?.content === 'string' ? result.content : Array.isArray(result?.content) ? result.content.map((block: Raw) => block.type === 'text' ? String(block.text ?? '') : `[Non-text output: ${String(block.type ?? 'unknown')}]`).join('\n') : '';
+  return { output: output.slice(0,16000), outputTruncated: output.length > 16000 };
 }
 // Chat keeps the user's own text separate from attachment payloads. The full raw
 // message (wrappers included) is what Pi receives; only the display projection is
@@ -54,7 +60,7 @@ export class SessionEvents {
   private pendingRunId?: string;
   get busy() { return !!this.activeRunId || !!this.pendingRunId; }
   private currentMessage?: ChatMessage;
-  private awaitingPromptEcho = false;
+  private pendingPromptEcho?: string;
   private queuedPrompts: { id: string; message: string; parentId?: string }[] = [];
   // Console-owned pre-dispatch queue for "Queue after run" items. Entries keep their
   // prepared (wrapper-bearing) message and image payloads server-side; snapshots and
@@ -273,14 +279,24 @@ export class SessionEvents {
   private maybeDrainQueue() { const notify = this.queueRequest; this.queueRequest = undefined; this.queueDrained = undefined; if (notify) notify(); else this.queueWakePending = true; }
   load(messages: Raw[]) {
     this.chat.length = 0;
-    for (const message of messages) if (message.role === 'user' || message.role === 'assistant') {
-      const content = message.role === 'assistant' ? assistantContent(message) : userContent(text(message));
-      if (content.text || 'attachments' in content || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.chat.push({ id: randomUUID(), role: message.role, ...content, complete: true });
+    for (const message of messages) {
+      if (message.role === 'user' || message.role === 'assistant') {
+        const content = message.role === 'assistant' ? assistantContent(message) : userContent(text(message));
+        if (content.text || 'attachments' in content || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.chat.push({ id: randomUUID(), role: message.role, ...content, complete: true });
+      } else if (message.role === 'toolResult') this.updateChatTool(String(message.toolCallId ?? ''), { ...toolOutput(message), status: message.isError ? 'failed' : 'completed' });
     }
     // A live assistant message can be streaming while the snapshot is applied: keep its
     // in-flight bubble so the eventual message_end completes a visible message instead of
     // updating an orphaned object dropped from chat.
     if (this.currentMessage && !this.chat.includes(this.currentMessage)) this.chat.push(this.currentMessage);
+  }
+  private updateChatTool(id: string, update: Partial<ChatTool>) {
+    if (!id) return undefined;
+    const message = [...this.chat].reverse().find(item => item.role === 'assistant' && item.tools?.some(tool => tool.id === id));
+    if (!message) return undefined;
+    const tool = { ...message.tools!.find(item => item.id === id)!, ...update };
+    message.tools = message.tools!.map(item => item.id === id ? tool : item);
+    return { chatMessageId: message.id, chatTool: tool };
   }
   private emit(type: EventType, entityId: string, payload: Record<string, unknown> = {}, options: Partial<ExecutionEvent> = {}) {
     const event: ExecutionEvent = { schemaVersion: 1, eventId: randomUUID(), seq: ++this.seq, generation: this.generation, timestamp: new Date().toISOString(),
@@ -292,8 +308,14 @@ export class SessionEvents {
   }
   preparePrompt(message?: string): string {
     if (this.activeRunId || this.pendingRunId) throw new Error('session already has an active run');
-    this.pendingRunId = randomUUID(); this.failure = undefined; this.stopped = false;
-    if (message) { this.chat.push({ id: randomUUID(), role: 'user', ...userContent(message), complete: true }); this.awaitingPromptEcho = true; }
+    this.pendingRunId = randomUUID(); this.failure = undefined; this.stopped = false; this.pendingPromptEcho = undefined;
+    if (message) {
+      const user: ChatMessage = { id: randomUUID(), role: 'user', ...userContent(message), complete: true };
+      this.chat.push(user); this.pendingPromptEcho = message;
+      // Publish the same identity as the snapshot: an HTTP refresh can fail or be
+      // overtaken by newer SSE deltas, so it cannot be the only way users see input.
+      this.emit('MessageCompleted', user.id, { text: user.text, attachments: user.attachments, role: 'user' }, { source: 'console', parentId: this.pendingRunId, status: 'completed' });
+    }
     return this.pendingRunId;
   }
   accepted(): void { if (this.pendingRunId) this.begin(); }
@@ -353,7 +375,7 @@ export class SessionEvents {
     if (!this.activeRunId) return;
     const id = this.activeRunId;
     this.emit(status === 'completed' ? 'RunCompleted' : 'RunFailed', id, { summary: reason ?? status }, { status, certainty: 'derived', source: 'console' });
-    this.activeRunId = undefined; this.currentMessage = undefined; this.messageBlocks.clear(); this.thinkingBlocks.clear();
+    this.activeRunId = undefined; this.currentMessage = undefined; this.pendingPromptEcho = undefined; this.messageBlocks.clear(); this.thinkingBlocks.clear();
     this.maybeDrainQueue();
   }
   ingest(raw: Raw): void {
@@ -382,20 +404,23 @@ export class SessionEvents {
       const body = text(raw.message);
       // The user message that opened this run was already added by preparePrompt; only a
       // queued steer/follow-up delivered mid-run needs to appear now (it was withheld at queue time).
-      if (body && !this.awaitingPromptEcho) {
+      if (body && body !== this.pendingPromptEcho) {
         const index = this.queuedPrompts.findIndex(item => item.message === body);
         if (index >= 0) {
           const queued = this.queuedPrompts.splice(index, 1)[0];
           this.emit('ExecutionNodeUpdated', queued.id, { node: { id: queued.id, kind: 'task', label: `Queued: ${body.slice(0, 80)}`, status: 'completed', correlation: 'derived-safe', sourceKind: 'pi', parentId: queued.parentId, updatedAt: new Date().toISOString() } }, { status: 'completed', parentId: queued.parentId });
           if (!this.queuedPrompts.length && this.publishedSteerQueued) { this.publishedSteerQueued = false; this.queueChanged(); }
         }
-        this.chat.push({ id: randomUUID(), role: 'user', ...userContent(body), complete: true });
-        const user = userContent(body);
-        this.emit('MessageCompleted', `pi-user:${this.activeRunId}:${randomUUID()}`, { text: user.text, attachments: user.attachments, role: 'user' }, { parentId: this.activeRunId, status: 'completed' });
+        const user: ChatMessage = { id: randomUUID(), role: 'user', ...userContent(body), complete: true };
+        this.chat.push(user);
+        this.emit('MessageCompleted', user.id, { text: user.text, attachments: user.attachments, role: 'user' }, { parentId: this.activeRunId, status: 'completed' });
       }
-      this.awaitingPromptEcho = false;
+      this.pendingPromptEcho = undefined;
     }
     if (raw.type === 'message_start' && raw.message?.role === 'assistant') {
+      // The opening echo precedes assistant output. If a worker omits that echo,
+      // don't suppress a later steering instruction (even with identical text).
+      this.pendingPromptEcho = undefined;
       this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false };
       this.messageBlocks.clear(); this.thinkingBlocks.clear(); this.chat.push(this.currentMessage);
       this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }, { parentId: this.activeRunId });
@@ -425,7 +450,9 @@ export class SessionEvents {
     }
     if (raw.type === 'message_end' && raw.message?.role === 'assistant') {
       if (!this.currentMessage) { this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false }; this.chat.push(this.currentMessage); this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }); }
-      Object.assign(this.currentMessage, assistantContent(raw.message)); this.currentMessage.complete = true;
+      const content = assistantContent(raw.message);
+      if (content.tools) content.tools = content.tools.map(tool => ({ ...this.currentMessage!.tools?.find(item => item.id === tool.id), ...tool }));
+      Object.assign(this.currentMessage, content); this.currentMessage.complete = true;
       this.emit('MessageCompleted', this.currentMessage.id, { text: this.currentMessage.text, thinking: this.currentMessage.thinking, tools: this.currentMessage.tools, stopReason: raw.message.stopReason }, { parentId: this.activeRunId, status: raw.message.stopReason === 'error' ? 'failed' : 'completed' });
       if (raw.message.stopReason === 'error' || raw.message.stopReason === 'aborted') this.failure = raw.message.errorMessage ?? raw.message.stopReason;
       this.currentMessage = undefined;
@@ -437,9 +464,10 @@ export class SessionEvents {
         const tools = this.currentMessage.tools ?? [];
         if (!tools.some(tool => tool.id === id)) this.currentMessage.tools = [...tools,toolInfo({id,name:raw.toolName,args:raw.args})];
       }
-      if (raw.type === 'tool_execution_start') this.emit('ToolStarted', entityId, { ...common, summary: 'Tool started', commandPreview: previewToolInput(raw.args), argumentKeys: Object.keys(raw.args ?? {}) }, { parentId: this.activeRunId, toolCallId: id, status: 'running' });
-      if (raw.type === 'tool_execution_update') this.emit('ToolProgress', entityId, { ...common, summary: 'Tool output updated', contentBlocks: raw.partialResult?.content?.length ?? 0 }, { parentId: this.activeRunId, toolCallId: id, status: 'running' });
-      if (raw.type === 'tool_execution_end') this.emit(raw.isError ? 'ToolFailed' : 'ToolCompleted', entityId, { ...common, summary: raw.isError ? 'Tool failed' : 'Tool completed', contentBlocks: raw.result?.content?.length ?? 0 }, { parentId: this.activeRunId, toolCallId: id, status: raw.isError ? 'failed' : 'completed' });
+      const chatUpdate = this.updateChatTool(id, raw.type === 'tool_execution_start' ? { status: 'running' } : { ...toolOutput(raw.type === 'tool_execution_end' ? raw.result : raw.partialResult), status: raw.type === 'tool_execution_end' ? raw.isError ? 'failed' : 'completed' : 'running' });
+      if (raw.type === 'tool_execution_start') this.emit('ToolStarted', entityId, { ...common, ...chatUpdate, summary: 'Tool started', commandPreview: previewToolInput(raw.args), argumentKeys: Object.keys(raw.args ?? {}) }, { parentId: this.activeRunId, toolCallId: id, status: 'running' });
+      if (raw.type === 'tool_execution_update') this.emit('ToolProgress', entityId, { ...common, ...chatUpdate, summary: 'Tool output updated', contentBlocks: raw.partialResult?.content?.length ?? 0 }, { parentId: this.activeRunId, toolCallId: id, status: 'running' });
+      if (raw.type === 'tool_execution_end') this.emit(raw.isError ? 'ToolFailed' : 'ToolCompleted', entityId, { ...common, ...chatUpdate, summary: raw.isError ? 'Tool failed' : 'Tool completed', contentBlocks: raw.result?.content?.length ?? 0 }, { parentId: this.activeRunId, toolCallId: id, status: raw.isError ? 'failed' : 'completed' });
       this.subagents.ingest(raw,entityId,id);
     }
     if (raw.type === 'auto_retry_end') this.failure = raw.success ? undefined : String(raw.finalError ?? 'retry exhausted');

@@ -4,7 +4,7 @@
 
 ## 導入方法
 
-Node.js 24 以降と互換性のある Pi SDK（0.99.2 / 1.0.0）が必要です。[公開版の簡単な導入](../README.md#すぐに使う)のほか、ソースの作業ツリーを Pi パッケージとして登録できます。
+Node.js 24 以降と互換性のある Pi SDK（0.99.2 / 1.0.0 / 1.0.2）が必要です。[公開版の簡単な導入](../README.md#すぐに使う)のほか、ソースの作業ツリーを Pi パッケージとして登録できます。
 
 ```powershell
 npm install
@@ -84,11 +84,16 @@ PORT=31717
 | --- | --- |
 | Pi パッケージ／Windows スタートアップの登録・クイック指示 | `~/.pi/agent/pi-console/workspaces.json`。`PI_CODING_AGENT_DIR` の下に変更可能。`PI_CONSOLE_DATA_DIR` で明示的に指定可能。 |
 | Console の保留指示 | 同じディレクトリーの `queue/<sessionId>.json`。本文と添付の内容を含み、再起動後は保留して明示的な Resume を待ちます。 |
+| 指示の配送記録 | 同じディレクトリーの `prompt-receipts/<requestId>.json`。指示のハッシュと受付結果のみを保存し、本文・添付は含みません。同じ requestId の重複実行を再起動後も防ぎます。 |
 | セッションの自動整理設定 | 同じ安定したデータディレクトリー内の `session-retention.json`。 |
 | 管理対象サーバーの状態・トークン・ログ | 同じディレクトリー内の `server-state.json`、`server-token`、`server.log`。トークンはローカル限定のランダムな秘密で、起動ごとに再生成されます。 |
 | 単独の `npm start` | 作業ディレクトリーの `.pi-console/` が既定。 |
 | Pi の会話 | Pi のセッションディレクトリー。`PI_CODING_AGENT_SESSION_DIR` で変更可能。ブラウザーの再接続では削除しません。 |
 | ブラウザーの外観など | ブラウザー内の設定。pi-web とは共有しません。 |
+
+送信の応答が失われた場合、ブラウザーに配送不明の表示を出します。**Check delivery · same request** は保存済みの同じ要求 ID・本文・添付で確認し、新しい要求として再送しません。サーバーが受付結果を保存できなかった場合は、安全のため同じ要求を再実行せず、履歴の確認と明示的な手動解決を求めます。配送記録は自動削除しません。削除すると、古い要求の重複排除が失われるので注意してください。要求 ID を指定しない既存 API クライアントには、この重複排除は適用されません。
+
+ブラウザーの下書きには、未確認の配送要求も保存します。複数タブの保存は revision を照合し、古いタブで新しい下書きを上書きしません。競合したタブの入力・添付はメモリー内に保持し、保存済みの下書きを読み込む前に確認します。未保存入力がある場合はコピーして退避してから **Load saved draft** を選んでください。
 
 **旧版の Windows スタートアップから更新する場合は、npm の更新前に[バックアップと移行](upgrade-storage.ja.md)を実施してください。** 旧パッケージ内の `.pi-console/` が先に削除される場合があります。
 
@@ -103,7 +108,10 @@ npm run build
 npm test           # 単体、疑似 Pi HTTP、隔離したパッケージ導入、SDK 初期化・信頼・履歴、巨大レコード転送（モデル呼び出しなし）
 npm run test:real  # 実際の Pi。無害な PowerShell コマンドと中断する sleep を実行
 npm run test:e2e   # Playwright と実際の Pi。インストール済み Chrome チャンネルを使用
+npm run test:compat # API モックの UI 基本操作。Chrome / Firefox / WebKit（モデル呼び出しなし）
 ```
+
+`test:compat` は専用の Vite サーバー（`127.0.0.1:31719`）を起動し、API と SSE をモックします。Console サーバー・Pi ワーカー・モデルは起動しません。本文と添付の送信、下書き復元、画面遷移、音声認識・通知・Clipboard API が利用できない場合の動作を PC・縦長・横長の画面サイズで確認します。Chrome はインストール済みチャンネルを使い、Firefox / WebKit は現在の Playwright に対応するバイナリーが必要です。未導入・バージョン不一致なら `npx playwright install firefox webkit` で用意してください。Chrome だけを確認する場合は `npm run test:compat -- --project=chromium` を使います。WebKit の成功だけで実機 Safari / iOS の確認済みとはみなしません。
 
 `test:real` と `test:e2e` は設定済みのプロバイダーを呼び出し、少額のモデル料金が発生する場合があります。実際にインストールされた kit の質問回答・再開 API を、モデル呼び出しなしで隔離テストする場合は以下を実行します。kit は一時ディレクトリーへコピーされ、モデル呼び出しが発生すればテストは失敗します。
 

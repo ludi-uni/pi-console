@@ -1,4 +1,5 @@
 import {test,expect} from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -12,7 +13,7 @@ test('Pi report saving owned by the Orchestrator cannot be mistaken for a stoppa
   await page.route('**/api/stop',route=>{stops++;void route.fulfill({json:{ok:true}})});
   try{
     await page.setViewportSize({width:390,height:780});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();expect((await created).ok()).toBeTruthy();
     await page.getByRole('button',{name:'← Sessions'}).click();await page.getByLabel('Session list').getByRole('button').first().click();

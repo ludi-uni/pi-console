@@ -12,7 +12,7 @@ import { SessionEvents } from '../server/runtime/events.ts';
 async function fakeWorker() {
   const root = await mkdtemp(join(tmpdir(), 'console-sdk-fake-'));
   const entry = join(root, 'worker.mjs');
-  await writeFile(entry, `process.argv.push('--sdk-entry',${JSON.stringify(fileURLToPath(new URL('./helpers/fake-sdk.mjs', import.meta.url)))},'--sdk-version','1.0.0'); await import(${JSON.stringify(new URL('../package/sdk-worker.mjs', import.meta.url).href)});`);
+  await writeFile(entry, `process.argv.push('--sdk-entry',${JSON.stringify(fileURLToPath(new URL('./helpers/fake-sdk.mjs', import.meta.url)))},'--sdk-version','1.0.2'); await import(${JSON.stringify(new URL('../package/sdk-worker.mjs', import.meta.url).href)});`);
   const previous = process.env.PI_CONSOLE_WORKER_COMMAND; process.env.PI_CONSOLE_WORKER_COMMAND = entry;
   const worker = new PiProcess(root, undefined, join(root, 'sessions'));
   try { await worker.start(); } catch (e) { await worker.close(); if (previous === undefined) delete process.env.PI_CONSOLE_WORKER_COMMAND; else process.env.PI_CONSOLE_WORKER_COMMAND = previous; await rm(root, { recursive: true, force: true }); throw e; }
@@ -24,7 +24,7 @@ test('SDK resolver accepts only verified versions and gives actionable guidance 
   try {
     await mkdir(join(root, 'dist')); const cli = join(root, 'dist', 'cli.js');
     await writeFile(cli, ''); await writeFile(join(root, 'sdk.mjs'), 'export {};');
-    for (const version of ['0.99.2', '1.0.0', '0.99.0']) {
+    for (const version of ['0.99.2', '1.0.0', '1.0.2', '0.99.0']) {
       await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version, exports: { '.': { import: './sdk.mjs' } } }));
       if (version === '0.99.0') assert.throws(() => resolvePiSdk(cli), /Unsupported Pi SDK 0\.99\.0.*Update the selected Pi installation \(PI_CONSOLE_PI_COMMAND\)/);
       else assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version });

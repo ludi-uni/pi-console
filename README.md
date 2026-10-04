@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-Pi の会話と実行状況を、Windows の PC やスマートフォンのブラウザーで確認・操作するためのローカル優先の Web コンソールです。Node.js 24 以降、互換性のある Pi（0.99.2 / 1.0.0）が必要です。Pi の TUI と**同じ会話画面ではなく**、Console が専用の SDK ワーカーで別の Pi セッションを管理します。
+Pi の会話と実行状況を、Windows の PC やスマートフォンのブラウザーで確認・操作するためのローカル優先の Web コンソールです。Node.js 24 以降、互換性のある Pi（0.99.2 / 1.0.0 / 1.0.2）が必要です。Pi の TUI と**同じ会話画面ではなく**、Console が専用の SDK ワーカーで別の Pi セッションを管理します。
 
 > **安全上の注意**：標準モードは認証なしで `127.0.0.1` にだけ接続します。LAN やインターネットへ直接公開しないでください。遠隔利用には [Cloudflare Tunnel + Access の設定](docs/cloudflare-access.md)が必要です。
 >
@@ -10,7 +10,7 @@ Pi の会話と実行状況を、Windows の PC やスマートフォンのブ�
 
 ## すぐに使う
 
-Windows PC に [Node.js 24 以降](https://nodejs.org/en/download) と [互換性のある Pi（0.99.2 / 1.0.0）](https://github.com/earendil-works/pi) を用意します。Pi でモデルを利用するための設定も必要です。
+Windows PC に [Node.js 24 以降](https://nodejs.org/en/download) と [互換性のある Pi（0.99.2 / 1.0.0 / 1.0.2）](https://github.com/earendil-works/pi) を用意します。Pi でモデルを利用するための設定も必要です。
 
 ```mermaid
 flowchart LR

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,10 +8,11 @@ test('desktop/mobile execution tree observes real Pi tool and canonical history'
   const cwd = await mkdtemp(join(tmpdir(),'pi-console-browser-'));
   try {
     await page.goto('/');
-    await page.getByLabel('Workspace path').fill(cwd);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(cwd);
     await page.getByRole('button',{name:'Add & open'}).click();
     await page.getByRole('button',{name:'New Session'}).click();
     await expect(page.getByLabel('runtime state')).toHaveText('running',{timeout:30000});
+    await page.getByRole('button',{name:'Show execution details',exact:true}).click();
     await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Use powershell to run Write-Output PHASE1_BROWSER_OK; Start-Sleep -Seconds 3. Then reply PHASE1_BROWSER_OK.');
     await page.getByRole('textbox',{name:'Prompt',exact:true}).press('Control+Enter');
     await expect(page.getByLabel('Execution Timeline')).toContainText('running',{timeout:30000});

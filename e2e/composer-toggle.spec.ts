@@ -1,4 +1,5 @@
 import {test,expect} from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -8,7 +9,7 @@ test('Send changes to Stop during a Pi run while Queue and Steer retain their de
   let active=true,stops=0;const sent:{mode?:string;message:string}[]=[];
   try{
     await page.setViewportSize({width:390,height:780});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const created=page.waitForResponse(response=>response.url().includes('/api/sessions')&&response.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     expect((await created).ok()).toBeTruthy();

@@ -53,7 +53,11 @@ test('tool-only reply shows observed command, copy below bubble, and instruction
       await route.fulfill({response,body:JSON.stringify(body)});
     });
     await page.reload();await page.locator('.workspace-card').filter({hasText:root}).click();await page.getByLabel('Session list').getByRole('button').first().click();
-    const live=page.locator('.message[data-message-id="a-live"]');await expect(live).toContainText('powershell · Write-Output CHECK_OK');
+    const live=page.locator('.message[data-message-id="a-live"]');await expect(live.locator('.message-bubble')).toHaveAttribute('aria-busy','true');
+    await expect(page.getByRole('status',{name:'Current conversation status'})).toHaveText('Running');
+    await page.getByLabel('Conversation status details').click();
+    await expect(page.locator('.conversation-status-body')).toContainText('powershell · Write-Output CHECK_OK');
+    await page.getByLabel('Conversation status details').press('Escape');
     const prior=page.locator('.message[data-message-id="a-94"]');
     const bubble=(await prior.locator('.message-bubble').boundingBox())!;const copy=(await prior.getByRole('button',{name:'Copy all'}).boundingBox())!;
     expect(copy.y).toBeGreaterThanOrEqual(bubble.y+bubble.height);

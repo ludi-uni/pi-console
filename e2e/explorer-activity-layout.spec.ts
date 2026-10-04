@@ -18,6 +18,8 @@ test('registered workspace offers a host Explorer action without accepting arbit
     await page.goto('/');
     await page.getByRole('button', { name: workspace.name, exact: false }).first().click();
     const button = page.getByRole('button', { name: 'Open on host PC' });
+    await expect(button).not.toBeVisible();
+    await page.locator('.workspace-menu:visible > summary').click();
     await expect(button).toBeVisible();
     await button.click();
     await expect(page.locator('.session-context .workspace-explorer-notice')).toHaveText('Opened on the host Windows desktop.');
@@ -42,13 +44,14 @@ test('Activity inbox leaves room for Send and Execution on desktop and does not 
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.goto('/');
     await page.getByRole('combobox', { name: 'Workspace', exact: true }).selectOption(workspace.id);
-    await page.getByRole('combobox', { name: 'Session', exact: true }).selectOption(session.id);
+    await page.getByLabel('Session list').locator('.session-row > button').first().click();
+    await page.getByRole('button', { name: 'Show execution details', exact: true }).click();
     const inbox = page.getByRole('region', { name: 'Activity notifications' });
     await expect(inbox).toBeVisible();
     await expect(inbox.getByRole('button', { name: /Running activity 0/ })).not.toBeVisible();
     await page.screenshot({ path: join(tmpdir(), 'pi-console-activity-collapsed-desktop.png') });
     await inbox.locator('summary').click();
-    await expect(inbox.getByRole('button', { name: /Running activity 0/ })).toBeVisible();
+    await expect(inbox.getByRole('button', { name: /Running activity 1/ })).toBeVisible();
     const send = page.getByRole('button', { name: 'Send', exact: true });
     await expect(send).toBeVisible();
     for (const [width, height] of [[1366, 768], [1024, 700]]) {

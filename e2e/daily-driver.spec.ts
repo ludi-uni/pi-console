@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,9 +9,10 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
   const cwd=await mkdtemp(join(tmpdir(),'pi-console-mobile-'));
   try{
     await page.goto('/');await expect(page.getByRole('heading',{name:'Workspaces'})).toBeVisible();
-    await page.getByLabel('Workspace path').fill(cwd);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(cwd);await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.getByRole('button',{name:'New Session'})).toBeVisible();
     await page.getByRole('button',{name:'← Workspaces'}).click();
+    await page.locator('.workspace-menu:visible > summary').click();
     await page.getByRole('button',{name:'Edit selected workspace'}).click();
     await page.getByRole('button',{name:'Pin',exact:true}).click();await expect(page.getByRole('button',{name:'Unpin'})).toBeVisible();
     await page.getByLabel('Rename workspace').fill('Mobile workspace');await page.getByRole('button',{name:'Rename',exact:true}).click();
@@ -19,15 +21,19 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
     const firstSession=page.waitForResponse(r=>r.url().endsWith('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const firstResponse=await firstSession;expect(firstResponse.ok(),await firstResponse.text()).toBeTruthy();
+    await page.getByRole('button',{name:'Model settings',exact:true}).click();
     await expect(page.getByLabel('Model',{exact:true})).toBeEnabled({timeout:15000});
     await expect(page.getByLabel('Thinking',{exact:true})).toBeEnabled();
+    await page.getByRole('button',{name:'Close model settings'}).click();
     await page.locator('.quick-details > summary').click();await page.getByRole('button',{name:'Edit saved shortcuts'}).click();await page.getByLabel('Quick prompts').fill('Check the result');await page.getByRole('button',{name:'Save prompts'}).click();
     await page.getByRole('button',{name:'Check the result'}).click();await expect(page.getByRole('textbox',{name:'Prompt',exact:true})).toHaveValue('Check the result');
     expect(await page.getByRole('button',{name:'Send',exact:true}).evaluate(el=>el.getBoundingClientRect().bottom)).toBeLessThan(720);
     await page.getByRole('textbox',{name:'Prompt',exact:true}).fill('Reply exactly MOBILE_COPY_OK.');await page.getByRole('button',{name:'Send',exact:true}).click();
     await expect(page.locator('.message[data-role="assistant"]').last()).toContainText('MOBILE_COPY_OK',{timeout:120000});
     await expect(page.getByRole('button',{name:'Send',exact:true})).toBeVisible({timeout:30000});
+    await page.getByRole('button',{name:'Model settings',exact:true}).click();
     await expect(page.getByLabel('Context usage',{exact:true})).toContainText(/Context\s+\d+%/,{timeout:15000});
+    await page.getByRole('button',{name:'Close model settings'}).click();
     await expect(page.getByLabel('runtime state')).not.toBeVisible();
     await page.locator('.message[data-role="assistant"]').last().getByRole('button',{name:'Copy all'}).click();expect(await page.evaluate(()=>navigator.clipboard.readText())).toContain('MOBILE_COPY_OK');
     await page.getByRole('button',{name:'← Sessions'}).click();await expect(page.getByLabel('Search sessions')).toBeVisible();
@@ -77,9 +83,11 @@ test('long session: 350 messages, 1200 events, code copy and bounded history',as
       body.snapshot.events=Array.from({length:1200},(_,i)=>({eventId:`e${i}`,seq:i+1,timestamp:new Date().toISOString(),type:'RunCompleted',runId:'long',entityId:'long',source:'pi',payload:{summary:`event ${i}`}}));
       body.snapshot.seq=1200;await route.fulfill({response,body:JSON.stringify(body)});
     });
-    await page.reload();await page.getByLabel('Workspace',{exact:true}).selectOption(ws.id);await page.getByLabel('Session',{exact:true}).selectOption(sid);
+    await page.reload();await page.getByLabel('Workspace',{exact:true}).selectOption(ws.id);
+    await page.getByLabel('Session list').locator('.session-row > button').first().click();
     await expect(page.getByLabel('Chat output').locator('article')).toHaveCount(350,{timeout:15000});
     await page.getByRole('button',{name:'Copy code'}).click();await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toBe('const answer = 42;');
+    await page.getByRole('button',{name:'Show execution details',exact:true}).click();
     await page.getByRole('button',{name:'History / Canonical Events'}).click();
     await expect(page.getByLabel('Execution Event Log').locator('div')).toHaveCount(200);
     const c=await page.request.post('/api/close',{data:{workspaceId:ws.id,sessionId:sid}});expect(c.ok()).toBe(true);

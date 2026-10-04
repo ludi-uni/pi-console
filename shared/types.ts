@@ -20,7 +20,7 @@ export type PromptAttachment = { kind: 'text'; name: string; mimeType: string; t
 // small text attachments; large text and images stay metadata-only in chat.
 export type ChatAttachment = { name: string; kind: 'text' | 'image'; mimeType: string; preview?: string; truncated?: boolean; bytes?: number };
 export interface SessionOptions { models: { provider: string; id: string; name: string }[]; model?: { provider: string; id: string }; thinkingLevel: string; thinkingLevels: string[]; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } }
-export interface ChatTool { id: string; name: string; command?: string; truncated?: boolean }
+export interface ChatTool { id: string; name: string; command?: string; truncated?: boolean; input?: string; output?: string; outputTruncated?: boolean; status?: 'running' | 'completed' | 'failed' }
 export interface ChatMessage { id: string; role: 'user' | 'assistant'; text: string; thinking?: string; tools?: ChatTool[]; complete: boolean; attachments?: ChatAttachment[] }
 export interface Workspace { id: string; name: string; path: string; pinned: boolean; lastOpenedAt: string; valid?: boolean }
 export interface SessionInfo { id: string; workspaceId: string; filePath: string; name?: string; updatedAt?: string; running?: boolean; decisionCount?: number }

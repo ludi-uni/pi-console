@@ -14,6 +14,7 @@ import { readWorkspaceText } from './runtime/workspace-text.ts';
 import {openWorkspaceMedia,mediaRange} from './runtime/workspace-media.ts';
 import { accessConfig, allowedHost, allowedPost, createAccessVerifier } from './access.ts';
 import { readJsonBody } from './body.ts';
+import { PromptReceipts } from './runtime/prompt-receipts.ts';
 import { createHmac, randomBytes } from 'node:crypto';
 
 const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-console');
@@ -21,6 +22,7 @@ const assetsDir = fileURLToPath(new URL('../dist/', import.meta.url));
 const store = new WorkspaceStore(join(dataDir, 'workspaces.json'));
 await store.load();
 const runtime = new RuntimeManager(store, undefined, join(dataDir,'report-recovery'), join(dataDir,'queue'));
+const promptReceipts = new PromptReceipts(join(dataDir, 'prompt-receipts'));
 const recycling = new SessionRecycling(join(dataDir,'session-retention.json'),runtime);
 await recycling.load();
 const port = Number(process.env.PORT ?? 31717);
@@ -124,7 +126,12 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/orchestrator/report/handled') { const b=await readJsonBody(req); return respond(res, 200, await runtime.markKitReportHandled(b.workspaceId,b.sessionId,b.runId,b.confirmed)); }
     if (req.method === 'POST' && url.pathname === '/api/subagents/inspect') { const b = await readJsonBody(req); return respond(res, 200, await runtime.inspectSubagent(b.workspaceId, b.sessionId, b.nodeId)); }
     if (req.method === 'POST' && url.pathname === '/api/orchestrator/start') { const b = await readJsonBody(req); return respond(res, 202, await runtime.startOrchestrator(b.workspaceId, b.sessionId, b.request)); }
-    if (req.method === 'POST' && url.pathname === '/api/prompt') { const b = await readJsonBody(req, 12 * 1024 * 1024); return respond(res, 200, { runId: await runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? [], b.mode) }); }
+    if (req.method === 'POST' && url.pathname === '/api/prompt') {
+      const b = await readJsonBody(req, 12 * 1024 * 1024);
+      const dispatch = () => runtime.prompt(b.workspaceId, b.sessionId, b.message, b.attachments ?? [], b.mode);
+      const runId = b.requestId === undefined ? await dispatch() : await promptReceipts.execute(b.requestId, { workspaceId: b.workspaceId, sessionId: b.sessionId, message: b.message, attachments: b.attachments ?? [], mode: b.mode ?? null }, dispatch);
+      return respond(res, 200, { runId });
+    }
     if (req.method === 'POST' && url.pathname === '/api/queue/edit') { const b = await readJsonBody(req, 256 * 1024); return respond(res, 200, { item: await runtime.editQueuedPrompt(b.workspaceId, b.sessionId, b.id, b.revision, b.text) }); }
     if (req.method === 'POST' && url.pathname === '/api/queue/remove') { const b = await readJsonBody(req); await runtime.removeQueuedPrompt(b.workspaceId, b.sessionId, b.id); return respond(res, 200, { ok: true }); }
     if (req.method === 'POST' && url.pathname === '/api/queue/resume') { const b = await readJsonBody(req); return respond(res, 200, { queue: await runtime.resumeQueuedPrompts(b.workspaceId, b.sessionId) }); }

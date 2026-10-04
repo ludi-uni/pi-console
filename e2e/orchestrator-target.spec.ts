@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ test('mobile Execution starts a kit run without a Pi prompt and keeps Chat clear
   await page.route('**/api/orchestrator/start',route=>{const b=route.request().postDataJSON();expect(b.request).toBe('Build a small plan');expect(b.workspaceId).toBeTruthy();expect(b.sessionId).toBeTruthy();job={running:true,request:b.request};void route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({job})})});
   try {
     await page.setViewportSize({width:390,height:780});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
@@ -64,10 +65,11 @@ test('long kit request stays collapsed while verified current tasks remain reada
   await page.route('**/api/resume',route=>{const body=route.request().postDataJSON();void route.fulfill({json:{snapshot:{session:{id:body.sessionId,workspaceId:body.workspaceId,filePath:'test.jsonl'},runtime:'running',chat:[],events:[],execution:{nodes,rows:nodes.map(n=>({node:n,depth:n.parentId?1:0,unattached:false})),roots:[old.id,rootNode.id],unattached:[],activeCount:3,failedCount:0,decisionCount:0},seq:0}}})});
   try{
     await page.setViewportSize({width:1280,height:800});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const created=page.waitForResponse(r=>r.url().includes('/api/sessions')&&r.request().method()==='POST');
     await page.getByRole('button',{name:'New Session'}).click();
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
+    await page.getByRole('button',{name:'Show execution details',exact:true}).click();
     await page.getByText('New orchestrator run',{exact:true}).click();
     await page.getByLabel('Orchestrator request').fill(request);
     await page.getByRole('button',{name:'Start orchestrator run'}).click();

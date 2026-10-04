@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +11,7 @@ test('language, prompt suggestions and filtered model picker', async ({page}) =>
     await page.route('**/api/quick-prompts', route => void route.fulfill({json:{prompts:['続きを実装して','テストして','原因を調べて']}}));
     await page.goto('/');
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-    await page.getByLabel('Workspace path').fill(root);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);
     await page.getByRole('button', {name:'Add & open'}).click();
     const models=[{provider:'alpha',id:'current',name:'Current'},{provider:'beta',id:'other',name:'Other'}];
     await page.route('**/api/session/options?*', route => void route.fulfill({json:{
@@ -25,6 +26,7 @@ test('language, prompt suggestions and filtered model picker', async ({page}) =>
     await expect(page.getByText('Suggested prompts')).toBeVisible();
     await page.locator('.quick-details > summary').click();
     await expect(page.getByRole('button', {name:'Continue implementing'})).toBeVisible();
+    await page.getByRole('button', {name:'Model settings',exact:true}).click();
     await expect(page.getByLabel('Model', {exact:true})).toBeEnabled();
     await expect(page.getByLabel('Model', {exact:true}).locator('option')).toHaveCount(2);
     await page.getByRole('button', {name:'Find models'}).click();
@@ -36,6 +38,7 @@ test('language, prompt suggestions and filtered model picker', async ({page}) =>
     await page.getByLabel('Model', {exact:true}).selectOption('beta::other');
     await expect(page.getByLabel('Model', {exact:true})).toHaveValue('beta::other');
     await expect(page.getByLabel('Search models')).toHaveCount(0);
+    await page.getByRole('button', {name:'Close model settings'}).click();
     await page.getByRole('button', {name:'Open settings'}).click();
     await page.getByRole('button', {name:'Language'}).click();
     await page.getByLabel('Display language').selectOption('ja');

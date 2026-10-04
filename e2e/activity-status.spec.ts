@@ -55,8 +55,8 @@ test('opening finished session history does not count leftover child statuses as
   await page.locator('.workspace-card').filter({ hasText: workspace.name }).click();
   await page.getByLabel('Session list').getByRole('button', { name: /^Completed session/ }).click();
   await expect(page.getByLabel('Chat output')).toContainText('Finished answer');
-  await expect(page.locator('.run-badge')).toContainText('All clear');
-  await expect(page.locator('.run-badge .live')).toHaveCount(0);
+  await expect(page.getByRole('status', { name: 'Current conversation status' })).toHaveText('Ready');
+  await expect(page.getByRole('status', { name: 'Current conversation status' })).toHaveAttribute('data-state', 'idle');
   await expect(page.getByRole('navigation', { name: 'Session views' })).toContainText('Execution · 0');
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
   await page.screenshot({ path: 'test-results/finished-session-idle-mobile.png', fullPage: true });

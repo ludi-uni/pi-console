@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 test.use({serviceWorkers:'block'});
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -20,7 +21,7 @@ test('assistant Markdown links open safe workspace text and code at referenced l
   try {
     await page.context().grantPermissions(['clipboard-read','clipboard-write']);
     await page.setViewportSize({width:390,height:844});await page.goto('/');
-    await page.getByLabel('Workspace path').fill(workspace);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(workspace);
     await page.getByRole('button',{name:'Add & open'}).click();
     const ws=(await (await page.request.get('/api/workspaces')).json()).workspaces.find((w:{path:string})=>w.path===workspace);
     const rejected=await page.request.get(`/api/workspace/text?workspaceId=${ws.id}&path=${encodeURIComponent('../secret.md')}`);

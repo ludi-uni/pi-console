@@ -203,7 +203,7 @@ test.describe('Android touch workspace navigation', () => {
     await expect.poll(() => pending.length).toBe(1);
     await expect(page.locator('.composer-actions .button-primary')).toBeDisabled();
     mark('send-pending');
-    const toolbar = page.locator('.session-toolbar button');
+    const toolbar = page.locator('.session-toolbar > button');
     expect(await toolbar.evaluate(button => {
       const box = button.getBoundingClientRect();
       const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
@@ -233,6 +233,55 @@ test.describe('Android touch workspace navigation', () => {
   }
 });
 
+test.describe('short restored conversation header', () => {
+  const android = devices['Pixel 7'];
+  test.use({ userAgent: android.userAgent, deviceScaleFactor: android.deviceScaleFactor, isMobile: true, hasTouch: true });
+  for (const [width, height] of [[844, 390], [390, 360]]) test(`header directly opens session list despite workspace return and pending ACK: ${width}x${height}`, async ({ page }) => {
+    await page.setViewportSize({ width, height }); const { pending, errors } = await setup(page);
+    await page.addInitScript(() => history.replaceState({ piConsoleNav: true, view: 'chat', workspace: 'switch-w', session: 'A', sessionReturn: 'workspaces' }, '', location.href));
+    await page.goto('/'); await expect(page.getByLabel('Chat output')).toContainText('Ready A.');
+    const prompt = page.getByRole('textbox', { name: 'Prompt', exact: true }); await prompt.fill('Restored short A'); await page.locator('.composer-actions .button-primary').click(); await expect.poll(() => pending.length).toBe(1);
+    const switcher = page.getByRole('button', { name: 'Switch session', exact: true }); await expect(switcher).toHaveCount(1); await expect(switcher).toBeVisible();
+    const box = (await switcher.boundingBox())!; expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(width);
+    await switcher.tap(); await expect(page.locator('.app-shell')).toHaveClass(/view-sessions/); await expect.poll(() => page.evaluate(() => history.state.session)).toBe('A');
+    await expect(page.getByLabel('Search sessions')).toBeFocused(); await expect(page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ })).toHaveAttribute('aria-current', 'page');
+    await page.getByLabel('Session list').getByRole('button', { name: /^Chat B/ }).tap(); await expect(page.getByLabel('Chat output')).toContainText('Ready B.');
+    await page.getByRole('button', { name: 'Switch session', exact: true }).tap(); await page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ }).tap();
+    await expect(prompt).toHaveValue('Restored short A'); await expect(page.locator('.composer-actions .button-primary')).toBeDisabled(); expect(pending).toHaveLength(1);
+    await pending[0].fulfill({ json: { runId: 'run-A' } }); await expect(prompt).toHaveValue(''); await noCrash(page, errors);
+  });
+});
+
+for (const mobile of [false, true]) test(`one session list, opened from chat header, preserves pending sends: mobile=${mobile}`, async ({ page }) => {
+  await page.setViewportSize(mobile ? { width: 390, height: 780 } : { width: 1280, height: 800 });
+  const { errors, pending } = await setup(page);
+  await openA(page, mobile);
+  await expect(page.getByLabel('Session', { exact: true })).toHaveCount(0);
+  const prompt = page.getByRole('textbox', { name: 'Prompt', exact: true });
+  await prompt.fill('A still sending');
+  await page.locator('.composer-actions .button-primary').click();
+  await expect.poll(() => pending.length).toBe(1);
+  try {
+    await page.getByRole('button', { name: 'Switch session', exact: true }).click();
+    await expect(page.getByLabel('Session list')).toBeVisible();
+    await expect(page.getByLabel('Search sessions')).toBeFocused();
+    await expect(page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ })).toHaveAttribute('aria-current', 'page');
+    await page.getByLabel('Search sessions').fill('Chat B');
+    await expect(page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ })).toHaveCount(0);
+    await page.getByLabel('Session list').getByRole('button', { name: /^Chat B/ }).click();
+    await expect(page.getByLabel('Chat output')).toContainText('Ready B.');
+    await prompt.fill('B draft');
+    await page.getByRole('button', { name: 'Switch session', exact: true }).click();
+    await expect(page.getByLabel('Search sessions')).toHaveValue('');
+    await page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ }).click();
+    await expect(prompt).toHaveValue('A still sending');
+    await expect(page.locator('.composer-actions .button-primary')).toBeDisabled();
+    await noCrash(page, errors);
+  } finally { await pending[0].fulfill({ json: { runId: 'run-A' } }); }
+  await expect(prompt).toHaveValue('');
+  expect(pending).toHaveLength(1);
+});
+
 test('streaming A to B to A ignores retired SSE callbacks and remains responsive', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const { errors } = await setup(page, true);
@@ -251,3 +300,57 @@ test('streaming A to B to A ignores retired SSE callbacks and remains responsive
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
   await noCrash(page, errors);
 });
+
+for (const width of [390, 320]) {
+  test(`one visible conversation heading with auxiliary workspace context, including short landscape and pending send: width=${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 390 ? 780 : 568 });
+    const { errors, pending } = await setup(page);
+    const title = 'Chat A — investigate a deliberately long conversation title without losing navigation';
+    const workspaceName = 'Workspace with a deliberately long descriptive name';
+    await page.route('**/api/workspaces', route => route.fulfill({ json: { workspaces: [{ ...workspace, name: workspaceName }] } }));
+    await page.route('**/api/workspaces/update', route => route.fulfill({ json: { workspace: { ...workspace, name: workspaceName } } }));
+    await page.route('**/api/sessions?*', route => route.fulfill({ json: { sessions: sessions.map(s => s.id === 'A' ? { ...s, name: title } : s) } }));
+    await openA(page, true);
+    const heading = page.getByRole('heading', { name: title, exact: true });
+    await expect(heading).toHaveCount(1);
+    await expect(page.locator('.chat-heading h2')).toBeVisible();
+    await expect(page.locator('.session-toolbar-context h2')).not.toBeVisible();
+    await expect(page.locator('.workspace-context')).toHaveText(workspaceName);
+    await expect(page.locator('.workspace-context')).toHaveAttribute('title', workspaceName);
+    await expect(page.getByRole('button', { name: 'Switch session', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await page.getByRole('button', { name: /^Execution/ }).click();
+    await expect(heading).toHaveCount(1); await expect(page.locator('.session-toolbar-context h2')).toBeVisible();
+    await expect(page.locator('.workspace-context')).toHaveText(workspaceName);
+    await page.getByRole('button', { name: '← Chat', exact: true }).click();
+    await expect(heading).toHaveCount(1);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(page.locator('.chat-heading h2')).not.toBeVisible();
+    await expect(page.locator('.session-toolbar-context h2')).toBeVisible();
+    await expect(heading).toHaveCount(1);
+    await expect(page.getByRole('status', { name: 'Current conversation status' })).toBeVisible();
+    await page.getByLabel('Conversation status details').click();
+    const details = (await page.locator('.conversation-status-body').boundingBox())!;
+    expect(details.x).toBeGreaterThanOrEqual(0); expect(details.x + details.width).toBeLessThanOrEqual(844);
+    await page.getByLabel('Conversation status details').press('Escape');
+    await expect(page.getByRole('button', { name: 'Model / Thinking', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    const prompt = page.getByRole('textbox', { name: 'Prompt', exact: true });
+    await prompt.fill('Pending A under short header');
+    await page.getByRole('button', { name: /^Send/ }).click(); await expect.poll(() => pending.length).toBe(1);
+    await page.getByRole('button', { name: '← Sessions', exact: true }).click();
+    await page.getByLabel('Session list').getByRole('button', { name: /^Chat B/ }).click();
+    await expect(page.getByRole('heading', { name: 'Chat B', exact: true })).toHaveCount(1);
+    await page.getByRole('button', { name: '← Sessions', exact: true }).click();
+    await page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ }).click();
+    await expect(heading).toHaveCount(1);
+    await expect(page.getByRole('status', { name: 'Current conversation status' })).toHaveText('Sending');
+    await expect(page.getByRole('button', { name: /^Send/ })).toBeDisabled();
+    await pending[0].fulfill({ json: { runId: 'run-A' } });
+    await expect(prompt).toHaveValue(''); expect(pending).toHaveLength(1);
+    await page.getByRole('button', { name: '← Sessions', exact: true }).click();
+    await page.getByRole('button', { name: '← Workspaces', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Workspaces', exact: true })).toBeVisible();
+    await noCrash(page, errors);
+  });
+}

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { join } from 'node:path';
 test('workspace can be renamed and removed without deleting its folder',async({page})=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-remove-workspace-'));
   try{
-    await page.goto('/');await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await page.goto('/');await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     const entry=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:any)=>w.path===root);
     await page.getByRole('button',{name:'Manage workspace'}).click();
     await page.getByLabel('Rename workspace').fill('Renamed workspace');await page.getByRole('button',{name:'Rename',exact:true}).click();
@@ -25,7 +26,7 @@ test('server failure remains actionable on mobile workspace and session screens'
   const root=await mkdtemp(join(tmpdir(),'pi-console-error-'));
   try{
     await page.setViewportSize({width:390,height:780});
-    await page.goto('/');await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
+    await page.goto('/');await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);await page.getByRole('button',{name:'Add & open'}).click();
     await expect(page.locator('main')).toHaveClass(/view-sessions/);
     await page.getByRole('button',{name:'← Workspaces'}).click();
     await page.route('**/api/workspaces',route=>route.abort());
@@ -59,6 +60,7 @@ test('mobile drill-down keeps workspace and session context while switching view
     const response=await created;expect(response.ok(),await response.text()).toBeTruthy();
     await expect(page.locator('main')).toHaveClass(/view-chat/);
     await expect(page.getByRole('button',{name:'← Sessions'})).toBeVisible();
+    await page.getByRole('button',{name:'Model settings',exact:true}).click();
     await expect(page.getByLabel('Model',{exact:true})).toBeEnabled({timeout:15000});
     const model=page.getByLabel('Model',{exact:true});
     const workspaceEntry=(await(await page.request.get('/api/workspaces')).json()).workspaces.find((w:any)=>w.path===root);
@@ -80,6 +82,7 @@ test('mobile drill-down keeps workspace and session context while switching view
     const thinking=page.getByLabel('Thinking',{exact:true});
     const nextLevel=settings.thinkingLevels.find((level:string)=>level!==settings.thinkingLevel);
     if(nextLevel){await thinking.selectOption(nextLevel);await expect(thinking).toHaveValue(nextLevel);await thinking.selectOption(settings.thinkingLevel);}
+    await page.getByRole('button',{name:'Close model settings',exact:true}).click();
     await page.getByLabel('Choose files').setInputFiles([
       {name:'note.txt',mimeType:'text/plain',buffer:Buffer.from('ATTACHMENT_OK')},
       {name:'icon.png',mimeType:'image/png',buffer:await readFile(join(process.cwd(),'public','icon-192.png'))},
@@ -127,7 +130,7 @@ test('folder browser creates a local subfolder and rejects invalid or duplicate 
   const root=await mkdtemp(join(tmpdir(),'pi-console-create-picker-'));
   try{
     await page.goto('/');
-    await page.getByLabel('Workspace path').fill(root);
+    await openWorkspaceAdd(page);await page.getByLabel('Workspace path').fill(root);
     await page.getByRole('button',{name:'Browse folders'}).click();
     const dialog=page.getByRole('dialog',{name:'Browse local folders'});
     await dialog.getByLabel('New folder name').fill('../escape');
@@ -154,7 +157,7 @@ test('folder browser selects a server-local workspace on desktop and mobile with
   await mkdir(nested,{recursive:true});await writeFile(join(root,'private.txt'),'not a directory');
   try {
     await page.goto('/');
-    await page.getByRole('button',{name:'Browse folders'}).click();
+    await openWorkspaceAdd(page);await page.getByRole('button',{name:'Browse folders'}).click();
     const dialog=page.getByRole('dialog',{name:'Browse local folders'});
     await expect(dialog.getByLabel('Folders',{exact:true})).toContainText('Home');
     await expect(dialog.getByLabel('Folders',{exact:true})).toContainText('Current directory');

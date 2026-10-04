@@ -43,7 +43,7 @@ test.beforeEach(async ({ page }) => {
 async function openChat(page: import('@playwright/test').Page) {
   await page.goto('/');
   const mobile = (page.viewportSize()?.width ?? 1280) <= 900;
-  if (mobile) await page.locator('.workspace-card').first().click();
+  if (mobile) await page.locator('.workspace-card').filter({ hasText: ws.path }).click();
   else await page.getByLabel('Workspace', { exact: true }).selectOption('w1');
   await page.getByLabel('Session list').getByRole('button').first().click();
   await expect(page.getByLabel('Chat output')).toContainText('Ready.');
@@ -262,7 +262,7 @@ for (const prefixed of [false, true]) test(`voice recognition previews finals wi
   await page.getByRole('dialog').getByRole('button', { name: /^(停止|Stop listening)$/ }).click(); await expect(insert).toBeEnabled(); await insert.click();
   await expect(prompt).toHaveValue('before こんにちは世界after'); expect(posts).toBe(0);
   await expect(prompt).toBeFocused(); expect(await prompt.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(14);
-  await expect.poll(async () => (await storedDraft(page, 'w2'))?.text).toBe('before こんにちは世界after');
+  await expect.poll(async () => (await storedDraft(page))?.text).toBe('before こんにちは世界after');
   await page.reload(); await expect(prompt).toHaveValue('before こんにちは世界after');
 });
 
@@ -369,6 +369,8 @@ test('sixteen queued items scroll independently without hiding prompt, Queue or 
   for (const [width, height] of [[1280, 800], [390, 780], [844, 390], [390, 360]]) {
     await page.setViewportSize({ width, height });
     const queue = page.getByLabel('Queued follow-ups');
+    await expect(queue).toHaveAttribute('data-compact', String(width <= 900));
+    if (width <= 900 && !await queue.locator('details').evaluate(el => (el as HTMLDetailsElement).open)) await queue.locator('summary').click();
     expect(await queue.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
     const prompt = (await page.locator('.composer-input').boundingBox())!, panel = (await page.locator('.chat-panel').boundingBox())!;
     expect(prompt.y + prompt.height).toBeLessThanOrEqual(panel.y + panel.height + 1);
@@ -383,6 +385,62 @@ test('sixteen queued items scroll independently without hiding prompt, Queue or 
     await expect(queue).toContainText('Queued request 16');
     await page.screenshot({ path: `test-results/queue-many-${width}x${height}.png` });
   }
+});
+
+for (const [width, height] of [[390, 780], [320, 568], [844, 390], [390, 360]]) {
+  test(`compact queue defaults to a count and keeps warning, Resume, Prompt and Stop reachable: ${width}x${height}`, async ({ page }) => {
+    const held = { ...snapBusy, queueHeld: true, queue: Array.from({ length: 16 }, (_, i) => ({ ...snapBusy.queue[0], id: `held-${i}`, status: i === 0 ? 'held' : 'pending', error: i === 0 ? 'delivery uncertain' : undefined })) };
+    await page.route('**/api/resume', route => route.fulfill({ json: { snapshot: held } }));
+    await page.route('**/api/state?*', route => route.fulfill({ json: held }));
+    let resumed = 0; await page.route('**/api/queue/resume', route => { resumed++; return route.fulfill({ json: { ok: true } }); });
+    await page.setViewportSize({ width, height }); await openChat(page);
+    const queue = page.getByLabel('Queued follow-ups'), summary = queue.locator('summary');
+    await expect(summary).toHaveText('Queued · 16 ▾'); await expect(page.getByRole('button', { name: 'Edit queued message 2', exact: true })).not.toBeVisible();
+    const resume = page.getByRole('button', { name: 'Resume queued', exact: true }); await expect(resume).toBeVisible();
+    const warning = queue.locator('.queue-held-notice'); await expect(warning).toContainText('delivery unconfirmed');
+    await summary.focus(); await page.keyboard.press('Enter'); await expect(page.getByRole('button', { name: 'Edit queued message 2', exact: true })).toBeVisible();
+    await queue.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    const panel = (await page.locator('.chat-panel').boundingBox())!;
+    for (const button of [resume, page.getByRole('button', { name: 'Stop', exact: true })]) {
+      const box = (await button.boundingBox())!; expect(box.y + box.height).toBeLessThanOrEqual(panel.y + panel.height + 1);
+      expect(await button.evaluate(el => { const b = el.getBoundingClientRect(); const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2); return hit === el || el.contains(hit); })).toBe(true);
+    }
+    await page.keyboard.press('Escape'); await expect(summary).toBeFocused(); await expect(queue.locator('details')).not.toHaveAttribute('open'); await expect(warning).toBeVisible();
+    page.once('dialog', async dialog => { expect(dialog.message()).toContain('twice'); await dialog.dismiss(); }); await resume.click(); expect(resumed).toBe(0);
+    page.once('dialog', dialog => dialog.accept()); await resume.click(); await expect.poll(() => resumed).toBe(1);
+    await page.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Keep reading and sending');
+    await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeEnabled(); await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+  });
+}
+test('compact failed delivery warning remains visible even without queueHeld', async ({ page }) => {
+  const failed = { ...snapBusy, queueHeld: false, queue: [{ ...snapBusy.queue[0], status: 'failed', error: 'delivery refused' }] };
+  await page.route('**/api/resume', route => route.fulfill({ json: { snapshot: failed } })); await page.route('**/api/state?*', route => route.fulfill({ json: failed }));
+  await page.setViewportSize({ width: 390, height: 780 }); await openChat(page);
+  await expect(page.getByLabel('Queued follow-ups').locator('.queue-held-notice')).toBeVisible(); await expect(page.getByLabel('Queued follow-ups')).toContainText('failed/unconfirmed delivery');
+  await expect(page.getByRole('button', { name: 'Remove queued message 1', exact: true })).not.toBeVisible();
+  await page.getByLabel('Queued follow-ups').locator('summary').click(); await expect(page.getByRole('button', { name: 'Remove queued message 1', exact: true })).toBeVisible();
+});
+test('queue editing survives rotation and scope changes; Queue and Steer now describe different delivery', async ({ page }) => {
+  const sessionB = { ...session, id: 's2', name: 'Chat B' };
+  const snapshotFor = (id: string) => ({ ...snapBusy, session: id === 's2' ? sessionB : session, queue: id === 's2' ? [{ ...snapBusy.queue[0], id: 'b-q', message: 'B queue only' }] : snapBusy.queue });
+  await page.route('**/api/sessions?*', route => route.fulfill({ json: { sessions: [session, sessionB] } }));
+  await page.route('**/api/resume', route => route.fulfill({ json: { snapshot: snapshotFor(route.request().postDataJSON().sessionId) } }));
+  await page.route('**/api/state?*', route => route.fulfill({ json: snapshotFor(new URL(route.request().url()).searchParams.get('sessionId')!) }));
+  await page.setViewportSize({ width: 1280, height: 800 }); await openChat(page);
+  await page.getByRole('button', { name: 'Edit queued message 1', exact: true }).click(); const editor = page.getByRole('textbox', { name: 'Edit queued message 1', exact: true }); await editor.fill('Retain edit through resize'); await editor.focus();
+  await page.setViewportSize({ width: 390, height: 780 }); await expect(editor).toBeFocused(); await expect(editor).toHaveValue('Retain edit through resize');
+  await expect(page.getByLabel('Queued follow-ups').locator('summary')).toHaveAttribute('aria-disabled', 'true'); await expect(editor).toBeVisible();
+  await page.getByRole('button', { name: 'Switch session', exact: true }).click(); await page.getByLabel('Session list').getByRole('button', { name: /^Chat B/ }).click();
+  await expect(page.getByLabel('Queued follow-ups').locator('details')).not.toHaveAttribute('open'); await expect(editor).not.toBeVisible();
+  await page.getByLabel('Queued follow-ups').locator('summary').click(); await expect(page.locator('.queue-item')).toContainText('B queue only');
+  await page.getByRole('button', { name: 'Switch session', exact: true }).click(); await page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ }).click();
+  await expect(editor).toHaveValue('Retain edit through resize'); await expect(page.getByLabel('Queued follow-ups')).toContainText('note.txt');
+  const save = page.waitForRequest(request => request.url().endsWith('/api/queue/edit')); await page.getByRole('button', { name: 'Save', exact: true }).click(); expect((await save).postDataJSON()).toMatchObject({ sessionId: 's1', id: 'q1', revision: 0, text: 'Retain edit through resize' });
+  await page.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Delivery intent');
+  await expect(page.locator('#composer-send-hint')).toContainText('sends after Pi finishes'); await page.getByLabel('Message delivery').selectOption('steer');
+  await expect(page.locator('#composer-send-hint')).toContainText('Immediate steering'); await expect(page.getByRole('button', { name: 'Steer now', exact: true })).toBeEnabled();
+  const posted: any[] = []; await page.route('**/api/prompt', route => { posted.push(route.request().postDataJSON()); return route.fulfill({ json: { runId: 'ack-only' } }); });
+  await page.getByRole('button', { name: 'Steer now', exact: true }).click(); await expect.poll(() => posted.length).toBe(1); expect(posted[0]).toMatchObject({ sessionId: 's1', mode: 'steer', message: 'Delivery intent' });
 });
 
 for (const operation of ['edit', 'remove', 'resume'] as const) {
@@ -606,6 +664,8 @@ test('add-workspace disclosure toggles independently and Add & open is disabled 
   await page.goto('/');
   const addToggle = page.locator('.workspace-add .add-toggle');
   await expect(addToggle).toBeVisible();
+  await expect(page.getByLabel('Workspace path')).toHaveCount(0);
+  await addToggle.click();
   await expect(page.getByLabel('Workspace path')).toBeVisible();
   await addToggle.click();
   await expect(page.getByLabel('Workspace path')).toHaveCount(0);
@@ -614,4 +674,57 @@ test('add-workspace disclosure toggles independently and Add & open is disabled 
   await expect(add).toBeDisabled();
   await page.getByLabel('Workspace path').fill('C:/demo');
   await expect(add).toBeEnabled();
+});
+
+for (const mobile of [false, true]) for (const existing of [false, true]) {
+  test(`workspace Add is opt-in, retains cancelled path and completes safely: mobile=${mobile}, existing=${existing}`, async ({ page }) => {
+    let listed = existing ? [ws, ws2] : [];
+    const pending: Route[] = [];
+    await page.route('**/api/workspaces', route => {
+      if (route.request().method() === 'POST') { pending.push(route); return; }
+      return route.fulfill({ json: { workspaces: listed } });
+    });
+    await page.setViewportSize(mobile ? { width: 390, height: 780 } : { width: 1280, height: 800 });
+    await page.goto('/');
+    const path = page.getByLabel('Workspace path');
+    const trigger = page.locator('.workspace-add-shortcut:visible,.add-toggle:visible');
+    await expect(path).toHaveCount(0);
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    if (mobile) await expect(page.locator('.workspace-bar')).not.toBeVisible();
+    if (mobile && existing) {
+      const card = (await page.locator('.workspace-card').first().boundingBox())!, button = (await trigger.boundingBox())!;
+      expect(card.y).toBeLessThan(button.y);
+    }
+    await trigger.click();
+    await expect(page.getByRole('heading', { name: 'Add a workspace' })).toBeFocused();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('button', { name: 'Add & open', exact: true })).toBeDisabled();
+    await path.fill('C:/preserved-draft');
+    await page.getByRole('button', { name: 'Cancel adding workspace', exact: true }).click();
+    await expect(path).toHaveCount(0); await expect(trigger).toBeFocused();
+    await trigger.click(); await expect(path).toHaveValue('C:/preserved-draft');
+    const add = page.getByRole('button', { name: 'Add & open', exact: true });
+    await add.click(); await expect.poll(() => pending.length).toBe(1);
+    await expect(add).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Cancel adding workspace', exact: true })).toBeDisabled();
+    expect(pending[0].request().postDataJSON()).toEqual({ path: 'C:/preserved-draft' });
+    listed = [ws, ws2]; await pending[0].fulfill({ json: { workspace: ws2 } });
+    await expect(page.locator('main')).toHaveClass(/view-sessions/);
+    await expect(page.getByLabel('Workspace', { exact: true })).toHaveValue('w2');
+    await expect(path).toHaveCount(0);
+    expect(pending).toHaveLength(1);
+  });
+}
+
+test('failed workspace Add leaves the disclosure and path available for correction', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 780 }); await page.goto('/');
+  await page.locator('.workspace-add-shortcut').click();
+  await page.getByLabel('Workspace path').fill('C:/missing');
+  await page.route('**/api/workspaces', route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 400, json: { error: 'Workspace path does not exist' } })
+    : route.fulfill({ json: { workspaces: [ws, ws2] } }));
+  await page.getByRole('button', { name: 'Add & open', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Workspace path does not exist');
+  await expect(page.getByLabel('Workspace path')).toHaveValue('C:/missing');
+  await expect(page.getByRole('button', { name: 'Add & open', exact: true })).toBeEnabled();
 });
