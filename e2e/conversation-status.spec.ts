@@ -59,8 +59,8 @@ for (const mobile of [false, true]) {
     const status = page.getByRole('status', { name: 'Current conversation status' });
     await expect(status).toHaveCount(1);
     await expect(page.getByLabel('connection', { exact: true })).toHaveText('Runtime healthy');
-    await expect(page.getByLabel('Active session alerts')).toHaveText('● 1');
-    if (!mobile) await expect(page.getByLabel('Activity notifications')).toContainText('Other sessions');
+    await expect(page.getByLabel('Active session alerts')).toHaveText('● 2');
+    if (!mobile) await expect(page.getByLabel('Activity notifications')).toContainText('Notifications');
     const tool: ExecutionNode = { id: 'tool', parentId: 'run-A', kind: 'tool', label: 'powershell', action: 'Write-Output STATUS_OK', sourceKind: 'pi', status: 'running', correlation: 'explicit', updatedAt: new Date().toISOString() };
     const execution = { ...states.A.execution, nodes: [tool], activeCount: 1 };
     await push(page, states, 'RunStarted', { activeRunId: 'run-A', execution, chat: [...states.A.chat, { id: 'stream', role: 'assistant', text: 'Partial reply', complete: false }] }, 'running');

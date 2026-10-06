@@ -19,7 +19,7 @@ export function resolvePiSdk(cli) {
         const path = resolve(dir, entry);
         if (!path.startsWith(dir + '/') && !path.startsWith(dir + '\\')) throw new Error('Pi SDK import escapes its package');
         if (!existsSync(path)) throw new Error('Pi SDK public entry is missing');
-        return { entry: path, version: pkg.version };
+        return { entry: path, version: pkg.version, packageRoot: dir };
       }
     }
     const parent = dirname(dir); if (parent === dir) break; dir = parent;

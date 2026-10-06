@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import type { Snapshot } from '../shared/types.ts';
+import type { Snapshot, ActiveSessionSummary } from '../shared/types.ts';
 import { SessionEvents } from '../server/runtime/events.ts';
 import { prepareAttachments } from '../server/runtime/attachments.ts';
 
@@ -12,7 +12,7 @@ const snapshot: Snapshot = {
   seq: 0, generation: 'compat-g', queue: [],
 };
 
-async function setup(page: Page, initialSnapshot: Snapshot = snapshot) {
+async function setup(page: Page, initialSnapshot: Snapshot = snapshot, activity: ActiveSessionSummary[] = []) {
   const errors: string[] = [], unexpected: string[] = [], submitted: unknown[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
@@ -40,7 +40,7 @@ async function setup(page: Page, initialSnapshot: Snapshot = snapshot) {
     else if (path === '/api/resume') json = { snapshot: initialSnapshot };
     else if (path === '/api/state') json = initialSnapshot;
     else if (path === '/api/session/options') json = { models: [], thinkingLevel: 'off', thinkingLevels: ['off'] };
-    else if (path === '/api/activity') json = { sessions: [] };
+    else if (path === '/api/activity') json = { sessions: activity };
     else if (path === '/api/orchestrator') json = { available: false };
     else if (path === '/api/quick-prompts') json = { prompts: [] };
     else if (path === '/api/pets') json = { pets: [] };
@@ -57,6 +57,43 @@ async function setup(page: Page, initialSnapshot: Snapshot = snapshot) {
   await expect(page.getByLabel('Chat output')).toContainText('Ready.');
   await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeEnabled();
   return { errors, unexpected, submitted };
+}
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 780 }, { width: 844, height: 390 }]) {
+  test(`notification list never moves or covers Send at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const activity: ActiveSessionSummary[] = Array.from({ length: 25 }, (_, i) => ({
+      sessionId: i ? `other-${i}` : session.id, workspaceId: workspace.id,
+      sessionName: `Session ${i} with a very long descriptive name that must remain readable`,
+      workspaceName: 'Workspace with a very long descriptive name that must remain readable',
+      running: i !== 0, decisionCount: 0, work: [], updatedAt: '2026-01-01T00:00:00Z',
+      completion: i === 0 ? { id: 'current-finish', scope: 'conversation', status: 'completed', at: '2026-01-01T00:00:00Z' } : undefined,
+    }));
+    const { errors, unexpected, submitted } = await setup(page, snapshot, activity);
+    const send = page.getByRole('button', { name: /^Send/ });
+    await page.getByLabel('Prompt', { exact: true }).fill('Layout check');
+    const before = await send.boundingBox();
+    const inbox = page.getByRole('region', { name: 'Activity notifications' });
+    await inbox.locator('summary').click();
+    const after = await send.boundingBox();
+    for (const key of ['x', 'y', 'width', 'height'] as const) {
+      expect(Math.abs(after![key] - before![key])).toBeLessThan(1); // Allow subpixel font rounding.
+    }
+    const current = inbox.locator('.activity-card.is-current');
+    await expect(current.locator('button').first()).toHaveAttribute('aria-current', 'page');
+    for (const name of [current.locator('b'), current.locator('.activity-inbox-name > small').first()]) {
+      expect(await name.evaluate(el => getComputedStyle(el).whiteSpace)).toBe('nowrap');
+      expect(await name.evaluate(el => getComputedStyle(el).textOverflow)).toBe('ellipsis');
+      await expect(name).toHaveAttribute('title', (await name.textContent())!);
+    }
+    expect(await inbox.locator('.activity-inbox-list').evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await expect(send).toBeInViewport();
+    await send.click(); // Actual hit testing: the notification overlay must not intercept Send.
+    await expect.poll(() => submitted.length).toBe(1);
+    await current.getByRole('button', { name: /Dismiss .* completion/ }).click();
+    await expect(current).toHaveCount(0);
+    expect(errors).toEqual([]); expect(unexpected).toEqual([]);
+  });
 }
 
 async function expectComposerLayout(page: Page) {

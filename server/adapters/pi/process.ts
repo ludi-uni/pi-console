@@ -68,7 +68,12 @@ export class PiProcess {
       this.expectedSdkVersion = sdk?.version;
       const entry = fixture ?? fileURLToPath(new URL('../../../package/sdk-worker.mjs', import.meta.url));
       const args = [entry, '--generation', generation, '--extension', consoleExtension(), ...(sdk ? ['--sdk-entry', sdk.entry, '--sdk-version', sdk.version] : []), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
-      const child = spawn(process.execPath, args, { cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      // SDK hosts have no Pi CLI in argv, and global npm packages are not
+      // visible to extension-relative module resolution. Bind child discovery to
+      // the same verified Pi installation as this worker, before extensions load.
+      // Do not mutate the server environment or inherit a stale host override.
+      const env = sdk ? { ...process.env, PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT: sdk.packageRoot } : process.env;
+      const child = spawn(process.execPath, args, { cwd: this.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
       child.stdin.on('error', error => { if (!this.intendedStop) { this.fail(error); child.kill(); } });
       this.writer = new TransportWriter(child.stdin, generation);

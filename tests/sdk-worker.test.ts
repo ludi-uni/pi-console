@@ -27,9 +27,50 @@ test('SDK resolver accepts only verified versions and gives actionable guidance 
     for (const version of ['0.99.2', '1.0.0', '1.0.2', '0.99.0']) {
       await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version, exports: { '.': { import: './sdk.mjs' } } }));
       if (version === '0.99.0') assert.throws(() => resolvePiSdk(cli), /Unsupported Pi SDK 0\.99\.0.*Update the selected Pi installation \(PI_CONSOLE_PI_COMMAND\)/);
-      else assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version });
+      else assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version, packageRoot: root });
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('SDK worker exports its selected Pi host before SDK loading, replaces stale inherited discovery and passes it to children', { timeout: 10000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'console-sdk-host-'));
+  const keys = ['PI_CONSOLE_PI_COMMAND', 'PI_CONSOLE_WORKER_COMMAND', 'PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT'];
+  const old = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  let worker: PiProcess | undefined;
+  try {
+    const host = join(root, 'selected-host'), cwd = join(root, 'workspace');
+    await mkdir(join(host, 'dist'), { recursive: true }); await mkdir(cwd);
+    const cli = join(host, 'dist', 'cli.js'); await writeFile(cli, '');
+    await writeFile(join(host, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.2', exports: { '.': { import: './sdk.mjs' } } }));
+    const fake = new URL('./helpers/fake-sdk.mjs', import.meta.url).href;
+    await writeFile(join(host, 'sdk.mjs'), `
+      import {execFileSync} from 'node:child_process';
+      import {createAgentSessionFromServices as create} from ${JSON.stringify(fake)};
+      export * from ${JSON.stringify(fake)};
+      const hostAtImport = process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT;
+      export async function createAgentSessionFromServices(options) {
+        const created = await create(options);
+        created.session.getSessionStats = () => ({ hostAtImport,
+          childHost: execFileSync(process.execPath, ['-p', 'process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT'], {encoding:'utf8'}).trim() });
+        return created;
+      }
+    `);
+    process.env.PI_CONSOLE_PI_COMMAND = cli; process.env.PI_CONSOLE_WORKER_COMMAND = '';
+    // Repeat without and with a stale inherited value; both must select this SDK.
+    for (const inherited of [undefined, join(root, 'wrong-host')]) {
+      if (inherited === undefined) delete process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT;
+      else process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT = inherited;
+      worker = new PiProcess(cwd, undefined, join(root, 'sessions'));
+      await worker.start();
+      assert.deepEqual((await worker.call('get_session_stats')).data, { hostAtImport: host, childHost: host });
+      assert.equal(process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT, inherited, 'server environment must stay unchanged');
+      await worker.close(); worker = undefined;
+    }
+  } finally {
+    await worker?.close();
+    for (const key of keys) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key]; }
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 test('SDK worker transfers huge live final/tool/aggregate events and image commands without stopping or truncating', { timeout: 30000 }, async () => {
@@ -84,6 +125,8 @@ test('real isolated SDK initializes, preserves RPC extension UI/log isolation, d
     const agent = join(root, 'agent'), extensions = join(agent, 'extensions'); await mkdir(extensions, { recursive: true });
     await writeFile(join(extensions, 'test.ts'), `export default function(pi){
       pi.registerCommand('subagents-inspect-rpc',{handler:async(args,ctx)=>{const requestId=args.split(' ')[0];ctx.ui.setWidget('subagent-inspect',['PI_SUBAGENT_INSPECT_JSON:'+JSON.stringify({kind:'pi-subagents.inspect-reply',version:1,requestId,text:'inspected'})]);}});
+      const hostAtLoad=process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT;
+      pi.registerCommand('sdk-host',{handler:async(_args,ctx)=>{ctx.ui.setStatus('sdk-host',hostAtLoad);}});
       pi.registerCommand('sdk-log',{handler:async(_args,ctx)=>{console.log('ordinary extension log, not JSON');if(ctx.mode!=='rpc'||!ctx.hasUI)throw Error('wrong mode');if(await ctx.ui.confirm('should cancel','no browser dialog'))throw Error('unexpected approval');ctx.ui.setStatus('sdk-test','ready');}});
     }`);
     const projectExtensions = join(root, '.pi', 'extensions'), marker = join(root, 'project-loaded');
@@ -101,6 +144,8 @@ test('real isolated SDK initializes, preserves RPC extension UI/log isolation, d
     assert.ok(!commands.some((c: any) => c.name === 'sdk-project')); assert.equal(existsSync(marker), false);
     assert.equal((await worker.call('prompt', { message: '/sdk-log' })).data.disposition, 'handled');
     assert.ok(events.some(event => event.method === 'setStatus' && event.statusKey === 'sdk-test'));
+    await worker.call('prompt', { message: '/sdk-host' });
+    assert.ok(events.some(event => event.method === 'setStatus' && event.statusKey === 'sdk-host' && event.statusText === resolvePiSdk(piExecutable()).packageRoot), 'real extensions must see the selected host before loading');
     assert.equal((await worker.inspectSubagent('test-async')).text, 'inspected');
     await worker.call('set_session_name', { name: '<pi-console:kit-report:1>' });
     await worker.call('set_session_name', { name: 'SDK smoke' });
