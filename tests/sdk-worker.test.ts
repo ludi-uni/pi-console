@@ -24,9 +24,10 @@ test('SDK resolver accepts only verified versions and gives actionable guidance 
   try {
     await mkdir(join(root, 'dist')); const cli = join(root, 'dist', 'cli.js');
     await writeFile(cli, ''); await writeFile(join(root, 'sdk.mjs'), 'export {};');
-    for (const version of ['0.99.2', '1.0.0', '1.0.2', '0.99.0']) {
+    for (const version of ['0.99.2', '1.0.0', '1.0.2', '1.1.0', '0.99.0', '1.0.3', '2.0.0']) {
       await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version, exports: { '.': { import: './sdk.mjs' } } }));
       if (version === '0.99.0') assert.throws(() => resolvePiSdk(cli), /Unsupported Pi SDK 0\.99\.0.*Update the selected Pi installation \(PI_CONSOLE_PI_COMMAND\)/);
+      else if (version === '1.0.3' || version === '2.0.0') assert.throws(() => resolvePiSdk(cli), new RegExp(`Unsupported Pi SDK ${version.replaceAll('.', '\\.')}.*Update the selected Pi installation`));
       else assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version, packageRoot: root });
     }
   } finally { await rm(root, { recursive: true, force: true }); }

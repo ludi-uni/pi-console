@@ -2,7 +2,7 @@
 
 [日本語](README.md)
 
-A local-first web console for Pi conversations and execution timelines on Windows PCs and mobile browsers. Requires Node.js 24+ and a compatible Pi (0.99.2 / 1.0.0 / 1.0.2). Its Web conversation is a **separate Pi session managed by a Console-owned SDK worker**, not a mirror of the TUI conversation.
+A local-first web console for Pi conversations and execution timelines on Windows PCs and mobile browsers. Requires Node.js 24+ and a compatible Pi (0.99.2 / 1.0.0 / 1.0.2 / 1.1.0). Its Web conversation is a **separate Pi session managed by a Console-owned SDK worker**, not a mirror of the TUI conversation.
 
 > **Security:** The default server binds only to `127.0.0.1` without authentication. Do not expose it directly to a LAN or the internet. Protected remote access requires [Cloudflare Tunnel + Access](docs/cloudflare-access.md).
 >

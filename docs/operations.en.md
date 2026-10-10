@@ -4,7 +4,7 @@
 
 ## Installation
 
-Requires Node.js 24+ and a compatible Pi SDK (0.99.2 / 1.0.0 / 1.0.2). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
+Requires Node.js 24+ and a compatible Pi SDK (0.99.2 / 1.0.0 / 1.0.2 / 1.1.0). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
 
 ```powershell
 npm install
