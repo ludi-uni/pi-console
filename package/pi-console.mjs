@@ -4,6 +4,7 @@
 // same detached, user-owned pi-console server via ./server-manager.mjs; they never start an
 // interactive session and never touch a server started by an older Pi Console version.
 import { startManagedServer, stopManagedServer, restartManagedServer, managedServerStatus } from './server-manager.mjs';
+import {runOwnerLogin} from './owner-login.mjs';
 
 const usage = `Usage: pi-console [command]
 
@@ -14,6 +15,7 @@ Commands:
   restart          stop then start the managed server (interrupts active Web sessions)
   restart <port>   restart on a specific port
   status           show running/stopped state, PID, port and URL
+  owner-login      confirm locally, display a one-time code and open the authentication page
   port             print the configured port
   help             show this message
 
@@ -41,6 +43,9 @@ async function main() {
   const port = extra === undefined ? undefined : Number(extra);
   if (port !== undefined && (port < 1 || port > 65535)) { console.error('port must be an integer from 1 to 65535'); process.exitCode = 2; return; }
   switch (command ?? 'start') {
+    case 'owner-login': {
+      await runOwnerLogin();return;
+    }
     case 'start': {
       const result = await startManagedServer({ port });
       console.log(`pi-console: ${describe(result)}${result.note ? ` (${result.note})` : ''}`);

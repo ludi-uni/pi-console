@@ -1,0 +1,8 @@
+.workspace-permissions { display: grid; gap: 10px; }
+.workspace-permissions fieldset { min-width: 0; padding: 10px; border: 1px solid #705e87; border-radius: 8px; }
+.workspace-permissions label { display: grid; gap: 6px; margin-top: 8px; }
+.workspace-permissions label.permission-choice { display: flex; align-items: center; gap: 10px; min-height: 38px; }
+.workspace-permissions .permission-choice input[type=checkbox] { width: 21px; min-height: 21px; flex: none; accent-color: #9677d6; }
+.workspace-permissions select { width: 100%; min-width: 0; min-height: 39px; }
+.workspace-permissions button { justify-self: start; }
+.workspace-permissions [role=alert] { color: #ffafa8; }

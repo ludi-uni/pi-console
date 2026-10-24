@@ -28,14 +28,19 @@ export function allowedPost(req: Pick<IncomingMessage,'headers'>, config?: Acces
   try { return new URL(origin).host===req.headers.host; } catch { return false; }
 }
 
-export function createAccessVerifier(config: AccessConfig, keys: JWTVerifyGetKey = createRemoteJWKSet(new URL(`${config.issuer}/cdn-cgi/access/certs`), {timeoutDuration:3000,cooldownDuration:30000,cacheMaxAge:600000})) {
-  return async (token: string | undefined): Promise<boolean> => {
-    if (!token || token.length>8192) return false;
+export type VerifiedAccessPrincipal=Readonly<{subject:string;issuer:string;audience:string;expiresAt:number}>;
+const verifiedPrincipals=new WeakSet<object>();
+export function isVerifiedAccessPrincipal(value:unknown):value is VerifiedAccessPrincipal {return !!value&&typeof value==='object'&&verifiedPrincipals.has(value);}
+export function createAccessPrincipalVerifier(config: AccessConfig, keys: JWTVerifyGetKey = createRemoteJWKSet(new URL(`${config.issuer}/cdn-cgi/access/certs`), {timeoutDuration:3000,cooldownDuration:30000,cacheMaxAge:600000})) {
+  return async (token: unknown): Promise<VerifiedAccessPrincipal|undefined> => {
+    if (typeof token!=='string'||!token || token.length>8192) return undefined;
     try {
       const {payload}=await jwtVerify(token,keys,{issuer:config.issuer,audience:config.audience,algorithms:['RS256'],requiredClaims:['iat','exp'],clockTolerance:'5s'});
       // Browser UI is interactive only. Cloudflare service tokens have an empty sub.
-      return payload.type==='app' && typeof payload.sub==='string' && payload.sub.length>0 &&
-        typeof payload.iat==='number' && payload.iat<=Date.now()/1000+5 && typeof payload.exp==='number' && payload.exp>payload.iat;
-    } catch { return false; }
+      if(!(payload.type==='app' && typeof payload.sub==='string' && payload.sub.length>0 && payload.sub.length<=200 &&
+        typeof payload.iat==='number' && payload.iat<=Date.now()/1000+5 && typeof payload.exp==='number' && payload.exp>payload.iat))return undefined;
+      const principal=Object.freeze({subject:payload.sub,issuer:config.issuer,audience:config.audience,expiresAt:payload.exp*1000});verifiedPrincipals.add(principal);return principal;
+    } catch { return undefined; }
   };
 }
+export function createAccessVerifier(config:AccessConfig,keys?:JWTVerifyGetKey){const verify=createAccessPrincipalVerifier(config,keys);return async(token:string|undefined):Promise<boolean>=>!!await verify(token);}

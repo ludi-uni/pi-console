@@ -33,6 +33,20 @@ export class ExecutionState {
     this.nodes.set(node.id, merged);
     return true;
   }
+  // A flat, bounded whitelist for local read-only observation. No labels,
+  // commands, details or graph rendering (which can recurse over deep trees).
+  readOnlyNodes() {
+    const values: ExecutionNode[] = [];
+    for (const node of this.nodes.values()) { if (values.length >= 5000) break; values.push(node); }
+    return { truncated: this.nodes.size > values.length, nodes: values.map(node => ({
+      id: node.id, kind: node.kind, status: node.status, parentId: node.parentId,
+      sourceKind: node.sourceKind, startedAt: node.startedAt, updatedAt: node.updatedAt, endedAt: node.endedAt,
+    })) };
+  }
+  // Content-read service only; not added to legacy status-only projections.
+  readOnlyResultNodes() {
+    return [...this.nodes.values()].slice(0,5000).map(n => ({ id:n.id,parentId:n.parentId,kind:n.kind,status:n.status,sourceKind:n.sourceKind,correlation:n.correlation,model:n.model,provider:n.provider }));
+  }
   snapshot(): ExecutionStateSnapshot {
     const nodes = [...this.nodes.values()]; const byId = new Map(nodes.map(n => [n.id,n]));
     const roots: string[] = [], unattached: string[] = [];

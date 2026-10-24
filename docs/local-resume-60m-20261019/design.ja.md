@@ -1,0 +1,7 @@
+# 固定60分の実装方針
+
+新規未承認申請とそのclient復旧記録だけ60分。共有CONFIRMATION_WAIT_MS=5分、code2分、cookie10分、review最大5分、grant7日、内部短期資格は維持。旧記録は元のexpiresAtのまま読む。expiredを復活させず、poll/retryでも延長しない。
+
+専用policyとtrusted FolderMcp pendingWaitMs optionを設け、新compositionだけ60分。新Enrollment recordは60分、validatorは旧5分と新60分だけ許容。pending結果にはserver/clientの短い方のrequestExpiresAtを返す。本人UIは待ち/認証/最終確認/許可期限を区別し、期限切れで承認を送らず手動再認証へ案内。認証の自動延長はなし。
+
+先にfocused RED/GREEN、fakeのみの境界/再起動/互換回帰、型検査/隔離build、実componentのheadless fake UIを確認する。稼働Nodeはmoduleを保持するため60分のruntime反映には管理再起動が必要だが、追加再起動は未承認なので実行しない。Dソースへは検証済差分を適用可能とし、UI配布はbackendとの同時反映用に保留。新client/serverが一時的に混在しても短い期限を公開しfail closed。実新規申請・取消・資格変更・grant承認はしない。

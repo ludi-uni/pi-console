@@ -1,0 +1,13 @@
+# 限定harnessのsource-only review
+
+OSモードは未実行。CurrentUser helper本文は旧136受入のsourceからそのまま固定し、SHA256を記録。helperは固定operationでProtectまたはUnprotectを一度だけ呼ぶ。1 helperあたり最大1 API attempt、合計Protect1/Unprotect3をBudgetで起動前に制限する。
+
+実行入口は引数3個の完全一致、plan hash、payload/entropy/上限/data名と6 core source hashの一致を確認してから1回だけrunTrialを呼ぶ。環境変数やHTTPで実行を有効化せず、自動再試験・追加opはない。起動元以外に明示起動するのは固定Node readerと固定system PowerShellだけ。Nodeは通常2、上限3。
+
+real PSのPIDはspawn時に保持したChildProcessへ紐付け、timeoutではそのhandleだけを停止。work45秒でabortしてcleanupへ移り、cleanupは残り最大15秒。close待ち自体もabortで離脱し、終わらないchildを無限待ちしない。未確認childが残る場合はdataを消さず、PIDとcleanup incompleteを返す。Supervisorの終了は呼出し元のexit codeでも確認する必要がある。
+
+初期preflightでは実行環境のTEMPが固定承認先と一致せず、data作成前に拒否した。現在は環境変数から保存先を選ばず、承認するC:\Users\leade\AppData\Local\Tempだけへ固定。成功・timeout・途中失敗の9 fake runで所有rootを除去。Fake PSには実PIDを捏造せずpid=null/actualProcess=falseを記録する。
+
+source-only修正点: helper/readerのclose待ちをabort可能にした。予期しないentry例外をOS未開始と断定しない。tamper時のspawn失敗や予期しないexitを「改変拒否成功」と誤認しない。unknown entry/identity差替えは削除せず保存する。
+
+fakeはPowerShell/DPAPIの実挙動やOS内部cache/電源断耐久を検証しない。ネットAPI、実profile、issuer、MCP client、live provider、account/ACL/network設定を操作するcodeはない。上限のfile数はharnessが明示作成する2 datafileであり、試験中source/log/owner-markerを追加しない。OS内部動作を隔離監視する試験ではない。

@@ -1,5 +1,6 @@
 // Console-owned isolated Pi SDK host. Native .mjs: no added runtime dependency.
 import { randomUUID } from 'node:crypto';
+import { FinalAnswerEvidence } from './final-answer-evidence.mjs';
 import { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { FrameDecoder, FrameLineReader, TransportWriter, QUEUED_BYTES, waitForPressure } from './worker-transport.mjs';
@@ -15,6 +16,20 @@ process.stdout.write = process.stderr.write.bind(process.stderr);
 const writer = new TransportWriter(protocolOutput, generation);
 let runtime, session, stopping = false, unsubscribe, unsubscribePressure;
 let abortEpoch = 0, commandCount = 0, commandBytes = 0;
+let activeConsoleRunId, pendingConsoleRunId;
+const finalEvidence = args.includes('--final-answer-evidence') ? new FinalAnswerEvidence() : undefined;
+const consoleRunIdValid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+const checkRunFence = command => {
+  if (command.expectedConsoleRunId !== undefined && (!consoleRunIdValid(command.expectedConsoleRunId) || command.expectedConsoleRunId !== activeConsoleRunId)) throw new Error('control_run_not_active');
+};
+const checkNativeIdle = command => {
+  if (!command.requireIdle) return;
+  // Verified against SDK 1.0.2: no streamingBehavior queues, and the synchronous
+  // started hook immediately precedes _runAgentPrompt's active-run assignment.
+  if (option('--sdk-version') !== '1.0.2') throw new Error('native_admission_sdk_unverified');
+  if (command.streamingBehavior !== undefined || !Number.isSafeInteger(command.nativeAdmissionDeadline) || Date.now() > command.nativeAdmissionDeadline) throw new Error('native_admission_expired');
+  if (session.isStreaming !== false || session.isCompacting !== false || session.pendingMessageCount !== 0) throw new Error('native_session_not_idle');
+};
 const emit = value => writer.send(value).catch(fatal);
 const identityTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: text => text, italic: text => text, underline: text => text, dim: text => text, inverse: text => text, strikethrough: text => text, getFgAnsi: () => '', getBgAnsi: () => '' };
 const ui = {};
@@ -66,6 +81,13 @@ async function bind() {
   unsubscribe?.(); unsubscribePressure?.(); session = runtime.session;
   // Capture startup/extension events as well as model activity.
   unsubscribe = session.subscribe(event => {
+    // Autonomous extension starts cannot inherit authority for an old Console run.
+    if (event.type === 'agent_start') { activeConsoleRunId = pendingConsoleRunId; pendingConsoleRunId = undefined; if (!activeConsoleRunId) finalEvidence?.reset(); }
+    finalEvidence?.observe(event);
+    if (event.type === 'agent_settled') {
+      const proof = finalEvidence?.finish(session.sessionManager); if (proof) void emit(proof);
+      activeConsoleRunId = undefined; pendingConsoleRunId = undefined;
+    }
     void emit(jsonEvent(event));
     if (event.type === 'agent_settled' && shutdownRequested) void writer.flush().then(() => shutdown()).catch(fatal);
   });
@@ -113,22 +135,31 @@ async function command(c) {
   try {
     switch (c.type) {
       case 'prompt': {
-        let accepted = false; const epoch = abortEpoch;
+        checkNativeIdle(c);
+        let accepted = false, admissionOpen = true; const epoch = abortEpoch;
         // Retain command accounting until its authoritative ACK, not run completion.
         // State/abort commands stay concurrent, including during slow input handlers.
         return await new Promise(resolve => {
           void session.prompt(c.message, { images: c.images, streamingBehavior: c.streamingBehavior, source: 'rpc',
             preflightResult: disposition => {
+              if (c.requireIdle) {
+                if (!admissionOpen || disposition !== 'started') throw new Error('native_admission_closed');
+                checkNativeIdle(c);
+              }
               if (disposition === 'started' && (stopping || shutdownRequested || epoch !== abortEpoch)) throw new Error('Prompt interrupted before acceptance');
+              if (disposition === 'started') {
+                activeConsoleRunId = pendingConsoleRunId = consoleRunIdValid(c.consoleRunId) ? c.consoleRunId : undefined;
+                if (activeConsoleRunId) finalEvidence?.start(activeConsoleRunId, session.sessionManager);
+              }
               accepted = true; void respond(true, { disposition }).finally(resolve);
             },
-          }).then(() => { if (!accepted) void respond(false, undefined, 'SDK did not report prompt acceptance').finally(resolve); })
-            .catch(e => { if (!accepted) void respond(false, undefined, e.message).finally(resolve); else fatal(e); });
+          }).then(() => { if (!accepted) { admissionOpen = false; void respond(false, undefined, 'SDK did not report prompt acceptance').finally(resolve); } })
+            .catch(e => { admissionOpen = false; if (!accepted) void respond(false, undefined, e.message).finally(resolve); else fatal(e); });
         });
       }
       case 'steer': return respond(true, { disposition: await session.steer(c.message, c.images, { source: 'rpc' }) });
-      case 'abort': abortEpoch++; await session.abort(); return respond(true);
-      case 'clear_queue': return respond(true, session.clearQueue());
+      case 'abort': checkRunFence(c); abortEpoch++; await session.abort(); return respond(true);
+      case 'clear_queue': checkRunFence(c); return respond(true, session.clearQueue());
       case 'get_state': return respond(true, state());
       case 'get_history': {
         const manager = session.sessionManager, leafId = manager.getLeafId();

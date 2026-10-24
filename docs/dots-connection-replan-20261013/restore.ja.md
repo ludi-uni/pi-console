@@ -1,0 +1,22 @@
+# アーカイブの構造と復元手順 — 復元未実行
+
+このアーカイブは退避コピー。Dの現行実装は除去せず、稼働状態・接続／grantも変更していない。全stashやreset/cleanで作業を移したものではない。
+
+## 保存したもの
+
+archive-manifest.jsonに126のtask関連path、現存114ファイル（非dist94、dist20）、9段階の214ファイル段階レコード、213種類のhashオブジェクトを記録した。current/がこの退避時点の現行ファイル。phases/は各実際の適用段階のbefore/afterと個別patch。objects/はhashで重複排除した同じbytes。current-build/は現行画面を構成する公開13ファイルの整合用セットで、共有resourceを含むため全体を今回だけの所有物とは扱わない。evidence/は最新の限定dummy受入証拠・画像。古い元rootは削除せずlineageで場所と元manifestを記録した。
+
+初回の作成では古い承認候補manifestのowner-gui-dialog hashが、実際に配置したhashと異なった。実際のstaged manifestとplaced verificationで訂正した。旧候補manifestは履歴として保持し、復元元として使わない。最終manifestは欠落version0、未説明の段階間gap0。初回記録はarchive-first-attempt.jsonに残す。
+
+秘密・profile・.env・cookie・JWT・ownerの実登録情報・grantデータ・repositoryの実データは含まない。native artifactの保全はbytesコピー／hashだけで、load・compile・実行・OS試験をしていない。既存の他作業はGit状態のpath metadataとhash観測だけで、内容を別途退避していない。共有ファイルのbeforeに既存変更が入ることは明示し、ファイル全体をこのタスクの所有物にしない。
+
+## 推薦する確認・復元の順序
+
+1. archive-integrity.jsonとzip receiptを確認する。展開先は新しい所有Tempか、本人が指定した隔離場所にする。zipの各entryがrelativeで、..・絶対path・drive指定・symlinkを含まないことを確認する。
+2. archive-integrity.jsonのファイルhashを照合する。現行114ファイル、phaseのbefore/after、現行build13を混ぜず、そのまま各manifestで確認する。今回すでに所有Temp内で展開・hash照合まで確認した結果はarchive-validation.jsonに記録する。
+3. 過去の案を見るだけならcurrent/または特定phaseを隔離コピーへ置く。必要な通常依存関係は既存checkoutのものを参照する。秘密、実settings、実grantを注入しない。native／OS専用entryや実Piは起動しない。
+4. 共有ファイルでこのタスクだけの差分を戻したい場合、特定phaseのchange.diff.patchとbefore/afterを使い、現在の変更との三者比較を行う。HEAD版へ一律に戻さない。beforeにはタスク開始前の重要な未コミット変更が保存されている。新しい変更があればファイル全体を上書きしない。
+5. Dへ実際に戻す必要が生じた場合は、具体的な復元差分と対象を作って本人に示す。現在作業／転送の停止確認と別の反映・再起動承認を得るまで、live source/distを上書きしない。sourceと対応buildを組で扱う。既存の正式Console管理経路を使い、他Tunnelを止めない。
+6. 新規fileを除去する復元なら、exact pathがD:\Develop\pi-console内、plain file、対象manifestのexpected hashと一致する場合に限定する。既存fileはbeforeのhash確認後に戻す。recursive delete、広範なGit操作、stable data／owner／grant／repoの削除は行わない。
+
+コードの復元は認証済みの連携復活を意味しない。新generationや期限切れの許可は本人の再確認が必要で、アーカイブから秘密や実grantを戻さない。今回この手順をDで実行してはいない。

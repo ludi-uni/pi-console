@@ -1,0 +1,41 @@
+# 外部世代・失効正本と短命利用権
+
+本人返答7008a8d7-237e-4980-a819-6e4927fc59e4の範囲を採用する。再起動時のネット接続を必須とし、外部の世代/失効情報を正本にする。旧資料のA/B待ちは本設計では解消した。実service・資格・設定・本番sourceの作成/変更はしない。
+
+## 正本と保存境界
+
+外部正本は owner/device/family/binding、approval revision・expiry・revoked、device資格失効、family epoch、transactionの結果、authority recovery epochを管理する。ローカルDBやblobを正本へ昇格しない。外部へread/control/final/handoff/renewalの生key、run/history/final本文、作成repo本文を送らない。親folderの生pathを外部の必須項目にせず、ローカルで正規化したowner/client/root identity/scope/audienceのbinding commitmentを扱う。
+
+正本の候補構成は「独立したmutation log/control registerが正本、通常DBは検証済projection」。正本CASはこの独立層でlinearizeし、通常DBのbackup/restoreで一緒に古くしない。製品/vendorや実現機構は未選定で、その独立性・耐久性・認証・IAM・backup境界は実証していない。単に同じDBへepoch列を足す案ではない。
+
+通常DBのcheckpoint/revision/digestが正本と違えば利用権発行を止める。正本commit後のprojection失敗も成功と断定しない。既知のlogを検証してreplayする回復手順と、独立control registerのrecovery epoch更新が必要。復旧epochはDB restore対象へ保存した数字だけで管理しない。
+
+正本log/control register自体とDBを一緒に巻戻した場合は保証外。mockのnegative controlでも失効が消える。これを防げる既存serviceがあると約束せず、実装前にroot全体の復元・管理者権限・監査・非常時失効の運用境界を確定する。
+
+## 短命利用権
+
+ローカルのrole credentialは既存の最大5分（ACCESS_MS）、receipt照合は既存2分（RECOVERY_MS）を維持する。その上に、外部正本の**最大60秒**の利用権leaseを要求する。leaseはowner/device/family、binding/audience/scope、approval revision、family epoch、recovery epoch、要求nonceと有効期間へ結び付ける。read/control/finalの内部用途分離は維持する。
+
+更新目安は20秒、1要求のtimeout上限は5秒。ネット失敗が判明した時点でadmissionを同期で閉じる。未検知の通信断や遠隔失効は、既発行leaseが切れるまで残り得る。通常timerの目安は次の20秒＋timeout5秒だが、保証する上限は利用時guardによる60秒。通信断で遠隔revokeが瞬時に全端末へ届くとは言わない。
+
+leaseのローカル期限は応答受信時から60秒を足さず、要求開始monotonic時刻から応答のremaining期間を数える。遅い応答、再利用nonce、世代不一致は拒否。bootでは旧leaseを一切採用しない。時計逆行・suspend/resumeや経過時間が不確かならclosedにし、オンライン再照合が必要。実OSのsleep/clock挙動は今回検証していない。
+
+## 既存92件との結合点
+
+既存の修復済み契約は「quiesce→issuer/stage→receipt prepare→epoch保存→整合確認→role/epoch切替・admission open」。この順序を変えず、将来は次のportを追加する。
+
+1. bootでclosedのまま、登録済みdevice資格を検証し、新nonceで正本の現在状態を取得する。
+2. ローカル承認の復元物だけを信じず、正本のapproval revision/state/expiryとowner/client/root/scopeを照合する。native親identityもローカルで確認する。
+3. 更新時はローカルのpublicには出ないsealed pending bundleを準備し、そのcommitmentとrequest fingerprintで正本CAS。CAS後にローカルepoch/receiptを永続化する。
+4. 同じrequestの応答喪失は2分内の同fingerprint・同世代結果へ照合。正本結果にkey本文を含めない。pendingがなくkeyを復元できない場合は、正本の有効approval/deviceで新たな内部rotationを行う。正本からkeyを取り出したことにはしない。
+5. 最終確認とfresh lease取得が済むまで既存admissionを閉じる。open後もFolderMcpのlive/purpose guardに同期のlease期限・失効状態判定を加える。ネット失敗/suspendの通知は同期で閉じる。lease取得だけで旧runtimeを再開しない。
+
+この結合portは未実装。online-authority-spec.tsはmetadata modelだけで既存92の実装を変更していない。mockのlocalCommitOkは実vault保存の証明ではなく、role keyを生成/復元しない。実readyはfalse。
+
+## 自動復帰と本人が必要になる場合
+
+同じdevice資格・owner approval・client continuityが有効で、親identityが一致し、正本が正常なら、ネット復旧後はclosedのまま自動再照合し、必要な内部rotationと保存を経て自動復帰する。人がキー3本を用意したり、通常の通信断ごとにfolderを再許可する設計にはしない。role期限切れでもapprovalが有効なら自動rotationできる。
+
+device資格失効、approval期限切れ/解除、root identity変更、client continuityの検証不能は自動復帰させない。本人browserで再確認/再登録が必要。失効した資格を同じ要求で自動再発行しない。サービスDB復旧は運用担当の検証を要し、その後有効端末は新recovery epochで再照合できる。
+
+初回のservice account/device登録は必要になるが、その本人認証方式と安全な標準資格保管は未選定。clientInfoや表示名を認証には使わない。MCP clientは既存の対応stdio companion経路を前提にし、全clientの再起動/自動再接続能力を約束しない。対応未確認clientには手動「再接続」等の最小fallbackを用意する。外部正本はMCP本文/任意Pi実行APIを公開せず、Consoleのpublic listenerによるMCP拒否も維持する。

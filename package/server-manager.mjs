@@ -1,3 +1,5 @@
+import{managedResumeBroker as verifyResumeBroker}from'./managed-resume-broker.mjs';
+import{ensureManagedResumeBroker as ensureResumeBroker}from'./managed-resume-open.mjs';
 // Shared lifecycle manager for the detached pi-console server.
 // Used by the Pi extension (/pi-console), the packaged CLI (package/pi-console.mjs via
 // scripts/pi-console.ps1) and the Windows Startup entry (package/startup.mjs), so every
@@ -14,7 +16,7 @@ import { spawn } from 'node:child_process';
 import { connect } from 'node:net';
 import { request } from 'node:http';
 import { open, readFile, writeFile, rename, rm, mkdir, stat } from 'node:fs/promises';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { consoleDataDir } from './data-directory.mjs';
@@ -58,7 +60,7 @@ async function listening(port, timeoutMs = 1500) {
  *  The WHOLE request/response is bounded by timeoutMs (headers+body+socket), the body is
  *  capped at 64 KiB, and the socket is always destroyed — a fake occupier can never hang
  *  or stream-flood the manager. */
-function manageRequest(port, { method = 'GET', path = '/api/manage/identity', proof, challenge, identityChallenge, timeoutMs = 2500 } = {}) {
+function manageRequest(port, { method = 'GET', path = '/api/manage/identity', proof, challenge, body:requestBody, identityChallenge, timeoutMs = 2500 } = {}) {
   return new Promise(resolve => {
     let finished = false;
     const done = value => { if (!finished) { finished = true; clearTimeout(absolute); req.destroy(); resolve(value); } };
@@ -72,7 +74,7 @@ function manageRequest(port, { method = 'GET', path = '/api/manage/identity', pr
     const absolute = setTimeout(() => done(null), timeoutMs); // whole request bounded, incl. trickle
     req.setTimeout(timeoutMs, () => done(null));
     req.on('error', () => done(null));
-    if (method === 'POST') req.end(JSON.stringify({ challenge }));
+    if (method === 'POST') req.end(JSON.stringify(requestBody??{ challenge }));
     else req.end();
   });
 }
@@ -294,3 +296,44 @@ export async function managedServerStatus({ env = process.env } = {}) {
   if (await listening(port)) return { status: 'stopped', port, portOccupied: true };
   return { status: 'stopped', port };
 }
+
+/** Explicit owner-login only. Never starts/restarts, queries a process list,
+ * exports a management token or retries a lost one-time bootstrap response. */
+export async function requestManagedOwnerLogin({env=process.env}={}){
+  env=await loadConsoleEnvironment(env);const dir=consoleDataDir(env),state=await readState(dir),token=await readToken(dir);
+  if(!state||!token)throw Error('local owner login requires this launcher-managed server');
+  const current=isConsole(await identity(state.port,token));
+  if(current?.pid!==state.pid||current?.startedAt!==state.startedAt||!/^[0-9a-f]{32}$/.test(current?.nonce??''))throw Error('managed server identity unavailable; no bootstrap requested');
+  const requestId=randomBytes(16).toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');
+  const proof=createHmac('sha256',token).update(`pi-console-local-owner:${current.nonce}:${requestId}`).digest('hex');
+  const reply=await manageRequest(state.port,{method:'POST',path:'/api/manage/local-owner/open',proof,body:{challenge:current.nonce,requestId}});
+  const v=reply?.body;
+  if(reply?.status!==200||!v||!/^[0-9a-f]{64}$/.test(v.code)||!Number.isSafeInteger(v.expiresAt)||v.expiresAt<=Date.now())throw Error('owner bootstrap outcome unavailable; do not replay automatically');
+  let url;try{url=new URL(v.url);}catch{throw Error('local owner address unavailable');}
+  if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||!url.port||url.pathname!=='/local-owner/'||url.search||url.hash||url.username||url.password)throw Error('local owner address rejected');
+  return {url:url.href,code:v.code,expiresAt:v.expiresAt};
+}
+
+/** Read-only identity proof for trusted GUI composition. No login code, cookie,
+ * start/stop, process inventory or token export. `io` is trusted test injection. */
+export async function verifyManagedOwnerServer({expected,env=process.env,io}={}) {
+  const source=io??{loadEnvironment:loadConsoleEnvironment,dataDir:consoleDataDir,readState,readToken,request:manageRequest,challenge:()=>randomBytes(24).toString('hex')};
+  try {
+    if(!expected||!Number.isSafeInteger(expected.pid)||expected.pid<=0||!Number.isSafeInteger(expected.port)||expected.port<1||expected.port>65535||typeof expected.startedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$/.test(expected.startedAt)||!/^[0-9a-f]{32}$/.test(expected.generation))throw Error();
+    const configured=await source.loadEnvironment(env),dir=source.dataDir(configured),state=await source.readState(dir),token=await source.readToken(dir);
+    if(!state||!/^[0-9a-f]{48}$/.test(token??'')||state.pid!==expected.pid||state.port!==expected.port||state.startedAt!==expected.startedAt)throw Error();
+    const challenge=source.challenge();if(!/^[0-9a-f]{48}$/.test(challenge))throw Error();
+    const reply=await source.request(state.port,{identityChallenge:challenge}),current=reply?.body;
+    const validProof=typeof current?.proof==='string'&&/^[0-9a-f]{64}$/.test(current.proof),candidate=validProof?Buffer.from(current.proof,'hex'):Buffer.alloc(32),proof=createHmac('sha256',token).update(`pi-console-identity:${challenge}`).digest();
+    const matches=timingSafeEqual(proof,candidate);proof.fill(0);candidate.fill(0);
+    const validOwnerProof=typeof current?.ownerProof==='string'&&/^[0-9a-f]{64}$/.test(current.ownerProof),ownerCandidate=validOwnerProof?Buffer.from(current.ownerProof,'hex'):Buffer.alloc(32),ownerProof=createHmac('sha256',token).update('pi-console-owner-gui-identity:'+JSON.stringify([challenge,expected.pid,expected.startedAt,expected.port,expected.generation])).digest();
+    const ownerMatches=timingSafeEqual(ownerProof,ownerCandidate);ownerProof.fill(0);ownerCandidate.fill(0);
+    if(reply?.status!==200||!validProof||!matches||!validOwnerProof||!ownerMatches||current.service!=='pi-console'||current.pid!==expected.pid||current.startedAt!==expected.startedAt||current.nonce!==expected.generation)throw Error();
+    return Object.freeze({...expected});
+  } catch { throw Error('managed_owner_identity_unavailable'); }
+}
+
+/** Read-only ownership proof for the dedicated resume broker. No env/profile discovery. */
+export async function managedResumeBroker({directory,io}={}){return verifyResumeBroker({directory,io:io??{readState,readToken,request:manageRequest,challenge:()=>randomBytes(24).toString('hex')}})}
+/** Explicit transport ensure. Does not call owner-login or any grant/credential route. */
+export async function ensureManagedResumeBroker({directory,io}={}){return ensureResumeBroker({directory,io:io??{readState,readToken,request:manageRequest,challenge:()=>randomBytes(24).toString('hex'),requestId:()=>randomUUID()}})}

@@ -1,0 +1,11 @@
+# broker開始と対象限定復元の候補
+
+観測事実はbroker_not_advertised/HTTP200。検証済みidentityのbroker広告欠落が直接の拒否理由。listener未開設はsource/再起動記録と整合する推定であり、内部flagを直接測定していない。
+
+管理開始: GET identityはread-onlyのまま。専用HMAC文脈で現在nonce/PID/開始時刻/管理port/requestIdを結ぶPOSTを追加する。literal127/Host/ヘッダー/本人UIとの分離、feature OFF、容量、同じrequestIdの応答喪失照合を検証する。開始は既存startBrokerだけ。code/cookie/grant/資格/サービスloadは作らない。clientは新しい明示的ensure経路を実ツール要求時だけ使い、旧拒否helperのfallbackとして呼ばない。
+
+対象限定: compositionは保護stateを検証・秘密重複予約・owner一覧用metadata取得するだけで、全familyを復元/更新しない。private proof/owner/grant/時計を認証してから対象だけの親pin・bindを行う。短期失効resumeはcredential_expired、正規renewでだけ対象を閉じたrotation contextに載せ、既存stage/activate/CAS/receipt/revoke guardで更新する。他familyは不変。owner view/request/revokeでも全familyを復元しない。
+
+通常の認証失敗・失効・親不一致・不正管理要求では、保護state/鍵/他runtime/開始countを変えない。既存のused-renewal別requestId再利用時の対象revoke、commit不確実時のfail-closedは元のsecurity契約として維持し、一般的な拒否と区別してテストする。
+
+既存fcfの初回材料不足/元期限切れ/generation差は緩和しない。耐久初回handoff・既存記録のmigration・新規申請は今回実装しない。secret/owner cookieの出力なし。稼働D/実資格/実listenerには適用しない。

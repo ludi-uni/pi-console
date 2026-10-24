@@ -1,0 +1,12 @@
+import test from'node:test';import assert from'node:assert/strict';
+import{harness,memoryBackend,dummyCodec}from'./fixture.mjs';
+import{createResumeStdioSession}from'../../package/local-resume-session.mjs';
+const broker={origin:'http://127.0.0.1:31718',pid:1234,startedAt:'dummy-start',generation:'a'.repeat(32)};
+const vector='0'.repeat(60)+'fffe';
+async function setup(){const f=harness(),app=await f.boot();let saved=null,created=0,lose=true;
+ const enrollment={async get(){return saved&&structuredClone(saved)},async begin(clientId,requestId,b){saved??={clientId,requestId,broker:b,proof:vector,createdAt:f.time(),expiresAt:f.time()+120000,state:'pending'};return structuredClone(saved)},async cancelling(){saved.state='cancelling'},async close(){saved.state='closed'},async dispose(){}};
+ const state={async get(){return null},async dispose(){}};
+ const make=async()=>{const s=createResumeStdioSession({clientId:'dummy-client-A',state,enrollment,verifyServer:async()=>broker,now:f.time,transport:{request:async b=>{const r=app.request(b);created=app.view().connections.length;if(lose){lose=false;throw Error('dummy lost response')}return r},claim:b=>app.claim(b),cancel:b=>app.cancelPending(b)}});await s.message({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25'}});await s.message({jsonrpc:'2.0',method:'notifications/initialized'});return s};return{f,app,make,enrollment,get created(){return created}}}
+const call=(s,id,name,args={})=>s.message({jsonrpc:'2.0',id,method:'tools/call',params:{name,arguments:args}});
+test('lost initial reply retries same request without duplicating pending connection',async()=>{const x=await setup(),s=await x.make();try{assert((await call(s,2,'begin_local_connection',{requestId:'dummy-request'})).error);const r=await call(s,3,'begin_local_connection',{requestId:'dummy-request'});assert(!r.error);assert.equal(JSON.parse(r.result.content[0].text).state,'pending');assert.equal(x.created,1);assert.equal(JSON.stringify(r).includes(vector),false)}finally{await s.dispose();await x.app.dispose()}});
+test('companion restart retrieves the saved initial request instead of creating another',async()=>{const x=await setup();let s=await x.make();try{await call(s,2,'begin_local_connection',{requestId:'dummy-request'});await s.dispose();s=await x.make();const r=await call(s,3,'get_local_connection');assert(!r.error);assert.equal(JSON.parse(r.result.content[0].text).state,'pending');assert.equal(x.created,1)}finally{await s.dispose();await x.app.dispose()}});

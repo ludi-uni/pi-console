@@ -1,0 +1,9 @@
+# 自己レビューと適用の限界
+
+独立reviewerは起動していません。モデルの初回grantは固定し、更新はaccess/refresh系列だけを替える。cookie失効は初回承認後の継続を終了させない。proofはfake verifier内部のWeakMapで発行済みobjectを照合し、clientInfo等の自己申告を認証に使わない。
+
+scope、expiry、cookie、rotation、再使用、receipt回収、取消競合、保存結果不明、再読込、未知世代、同一条件の再起動を26件で確認した。noneを欠落/null/巨大期限値から導かない。全accessは有限で、roleタグは別。final本文を自動公開しない。未認証の攻撃文字列だけで正規clientを解除しない。
+
+画面確認で、再読込時に選択欄が既定7日へ戻る表示不整合を見つけ、保存されたgrantの期間を表示するよう修正し、noneの再読込も検証した。承認応答のsocket切断をbrowserが自動再送したため、fixtureを本文の欠落へ変更して照合導線を検証した。最終画面11件は全成功。
+
+本番の必須差分は、信頼できるclient instance/daemon再起動proof、保護された継続資格、取消を全系列へ反映するepoch、現行Folder/Pi/control/companionの契約統合、標準HTTP MCPの場合のOAuth/PKCE/refresh実装。fake objectや公開dummyタグをそのまま本番認証へ使えない。今回のコードを本番適用済みと扱わない。

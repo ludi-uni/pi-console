@@ -1,0 +1,4 @@
+import type {IncomingMessage,ServerResponse} from 'node:http';
+export interface LocalResumeBrokerContext {ownerVerify:(req:IncomingMessage)=>boolean;ownerExpiry:(req:IncomingMessage)=>number|undefined;port:()=>number}
+export interface LocalResumeInstallationOptions {enabled?:boolean;dataDir?:string;provider?:unknown;authorizedOS?:boolean;readOwnerBinding?:()=>unknown|Promise<unknown>;identity?:unknown;codec?:unknown;backend?:unknown;testOnly?:boolean;secret?:()=>string;reserved?:string[]|(()=>string[]|Promise<string[]>);now?:()=>number}
+export function createLocalMcpInstallation(options?:LocalResumeInstallationOptions):{status():{enabled:boolean;loaded:boolean};get():Promise<unknown>;ownerBroker(context:LocalResumeBrokerContext):(req:IncomingMessage,res:ServerResponse)=>Promise<boolean>;revokeOwner(requestId:string,check:()=>void):Promise<void>;dispose():Promise<void>};

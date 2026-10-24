@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { FinalAnswerJournal } from './final-answer-journal.ts';
 import type { ChatMessage, ChatTool, ExecutionEvent, EventType, SessionInfo, Snapshot, ProcessState, ExecutionNode, QueuedItem, StoredQueueItem, PromptAttachment } from '../../shared/types.ts';
 import { prepareAttachments } from './attachments.ts';
 import { QueueStore } from './queue-store.ts';
@@ -57,6 +58,10 @@ export class SessionEvents {
   // consumers key the event stream on (generation, seq) to reject stale late events.
   readonly generation = randomUUID();
   activeRunId?: string;
+  private finalJournal?: FinalAnswerJournal;
+  setFinalAnswerJournal(journal: FinalAnswerJournal) { this.finalJournal = journal; }
+  readOnlyFinalAnswer(runId: string) { return this.finalJournal?.read(runId); }
+  flushFinalAnswers() { return this.finalJournal?.flush() ?? Promise.resolve(); }
   private pendingRunId?: string;
   get busy() { return !!this.activeRunId || !!this.pendingRunId; }
   private currentMessage?: ChatMessage;
@@ -308,7 +313,7 @@ export class SessionEvents {
   }
   preparePrompt(message?: string): string {
     if (this.activeRunId || this.pendingRunId) throw new Error('session already has an active run');
-    this.pendingRunId = randomUUID(); this.failure = undefined; this.stopped = false; this.pendingPromptEcho = undefined;
+    this.pendingRunId = randomUUID(); this.finalJournal?.begin(this.pendingRunId); this.failure = undefined; this.stopped = false; this.pendingPromptEcho = undefined;
     if (message) {
       const user: ChatMessage = { id: randomUUID(), role: 'user', ...userContent(message), complete: true };
       this.chat.push(user); this.pendingPromptEcho = message;
@@ -318,7 +323,7 @@ export class SessionEvents {
     }
     return this.pendingRunId;
   }
-  accepted(): void { if (this.pendingRunId) this.begin(); }
+  accepted(runId?: string): void { const id=runId??this.pendingRunId??this.activeRunId; if(id)this.finalJournal?.ack(id); if (this.pendingRunId) this.begin(); }
   // A steer/follow-up accepted by Pi is queued inside Pi, not yet part of the delivered
   // conversation. Do NOT push it into `chat` — that would show a complete sent user bubble
   // before Pi delivers the message. Instead surface it only as a queued execution node so
@@ -374,11 +379,13 @@ export class SessionEvents {
   private end(status: 'completed' | 'failed' | 'cancelled' | 'interrupted', reason?: string) {
     if (!this.activeRunId) return;
     const id = this.activeRunId;
+    this.finalJournal?.terminal(id,status);
     this.emit(status === 'completed' ? 'RunCompleted' : 'RunFailed', id, { summary: reason ?? status }, { status, certainty: 'derived', source: 'console' });
     this.activeRunId = undefined; this.currentMessage = undefined; this.pendingPromptEcho = undefined; this.messageBlocks.clear(); this.thinkingBlocks.clear();
     this.maybeDrainQueue();
   }
   ingest(raw: Raw): void {
+    if(raw.type==='console_final_answer_saved'){this.finalJournal?.evidence(raw);return;}
     this.asyncSubagents.ingest(raw);
     if (raw.type === 'console_dialog_cancelled') { this.emit('ErrorEvent', 'extension-ui', { summary: `Unsupported ${raw.method} dialog cancelled` }, { source: 'console' }); return; }
     if (raw.type === 'extension_error') { this.emit('ErrorEvent', 'extension', { summary: summary(raw.error) }); return; }

@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "contract": 2,
+  "fixtureProbes": false,
+  "sourceSha256": "17400635999615e1bc5fe3d0b9cdaaf85d171e55de79eadd090f5495fcea652e",
+  "binarySha256": "a0176ffe6b3c1b9f8f37f5609ae78cb4ee40c944746b54e4c14fc53b99f71cc6",
+  "runtime": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.22.1",
+    "napi": 10,
+    "modules": 137
+  }
+}

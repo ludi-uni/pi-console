@@ -1,0 +1,13 @@
+# 実接続アダプタの実装準備（未適用）
+
+08:40の承認は準備だけ。新しい独立Tempコピーに実装し、既存daemon/本番source/dist/config/権限/credential/security設定を変更しない。実grant/token発行、credential配置、本番接続・配備を行わない。
+
+新adapterは承認済みの継続許可を読み、短命の資格だけを更新する。7日/31日/明示noneのowner/client/対象/操作/トンネル/承認期間は不変。owner cookieを通常更新に要求しない。server側に、承認読取・client/transport証明・短命資格issuer・credentialを保護するhandoff/vault・既存runtimeへの原子的rotationという必須portを定義する。portが一つでも未接続ならunavailableで、constructorは発行・保存・listener起動を行わない。
+
+独自local broker HTTPとcompanion内部の更新clientを用意する。loopback以外、proxy/tunnel headers、browser Origin/cookie、queryのcredentialを拒否し、URL/argv/log/ownerビュー/MCP結果に秘密を返さない。更新レスポンスはprivate companion向けだけ。送信済み更新の応答喪失では同じrequestを回収し、scope/期限を変えない。取消とrotation競合、未知世代、clock rollbackは停止。runtimeのprepare/activate/invalidateを分離し、部分失敗では資格を使わせない。
+
+既存FolderMcp/PiControlActivationは静的credentialとgrant expiryが結合しており、8h上限・owner cookie clipping・companionの24h claim検査がある。typed adapterのfixture成功だけで既存engineのrotation対応済みとしない。既存コードはbaselineコピーとして照合し、本番compositionへadapterを登録しない。
+
+実Dotsの公開MCP認可仕様はHTTP OAuth/PKCEとstdioを区別するが、今回のinstalled companionにこの新broker契約を実装したと保証しない。nativeの保持pipeは同じdaemonのみを証明し、再起動継続proofは未提供。HTTP OAuth refreshやclient登録能力は未確認として停止条件にする。既存daemonを交換して接続できたことにはしない。
+
+fixtureは静的dummy資格、fake ports、所有loopback HTTPだけ。新資格生成器・秘密保存器・native/provider・Piを実装/実行しない。実接続に必要な対象/操作/権限/秘密設定と不足portを一覧にし、別途確認できる状態で終了する。

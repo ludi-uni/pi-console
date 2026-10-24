@@ -1,0 +1,19 @@
+# admission修復の自己review
+
+変更範囲は隔離fixtureのcontinuation.ts、folder-integration.ts、work/server/folder-mcp.ts。fake providerの待機試験用にintegration-fixture.tsのprovider参照をfixture内だけで返し、runtime-delta.test.tsの受理negative control一件を拒否regressionへ変更した。
+
+確認した契約:
+- ContinuationBridge.renewのcurrent renewal認証後にquiesce。issuer/stage/receipt準備のawaitより前に閉じる。認証前の無効要求や、同requestのreceipt読戻しだけの経路で権限更新は始めない。
+- FolderMcp.quiesceContinuationは同期でconnection admissionをclosedにし、処理queueをdrainする。stage以後もclosedを維持。他のrotationはopenを要求するquiesceを通れない。
+- FolderMcp.activateContinuationはFolderMcp.serial内でepoch保存・provider再照合・bridgeのapproval/sender/clock/receipt確認をawaitし、最後のguardとrole/epoch切替・openにはawaitを置かない。guardと呼出し時live判定で管理操作のadmissionを制御する。
+- callはcontinuationモードで受信時とqueue実行時の両方を判定。closed中に届いた新key要求がqueueで待って後から成功することを防ぐ。tools/claim/purposeもliveで拒否。
+- activate内の例外はqueue解放前にrevoke/wipe。trusted invalidateは同期で閉じてからstage掃除をqueueへ置く。bootstrapは初期保存の完了までclosed。
+- 従来のnon-continuation callのqueue動作とexpiry条件には、新たなpreflight/guardを適用しない。
+
+REDはissuer await中の旧key受理を検出（Missing expected rejection）。GREEN後は32の境界試験。保存前失敗/保存後ack喪失、永続化していないadvanceの偽成功、commit失敗、final approval revision変更、provider後処理失敗、期限切れ、親identity変更、invalidate/dispose、bootstrap、同request再送、新runtimeの旧新key拒否を含む。型検査18inputs/診断0。
+
+本修復範囲の未修正必須指摘はなし。以下は残る:
+- file fixtureの正常な旧blobの復元耐性は未修復。A/B選択と独立anchor/再承認方針には着手しない。
+- approval永続復元、固定fixture bindingの正規化対応、real sender continuity、OS vault adapterは未接続。
+- 実D FolderMcpへの再開APIとadmission修復は未適用。native parent handle/実OS/実client/real secretを試していない。providerのhandle pinning契約のOS実証は今回の成果に含まれない。
+- closed中のprocess全体のsnapshot復元、hostile installed code、Pi/SDK任意実行のOS隔離は提供しない。

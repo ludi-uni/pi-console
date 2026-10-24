@@ -8,6 +8,7 @@ import { JsonlParser } from './parser.ts';
 import { FrameDecoder, TransportWriter } from '../../../package/worker-transport.mjs';
 import { resolvePiSdk } from '../../../package/pi-sdk-resolver.mjs';
 import type { ProcessState } from '../../../shared/types.ts';
+import {piWorkerEnvironment} from './worker-environment.ts';
 
 type RecordValue = Record<string, any>;
 export function transition(state: ProcessState, next: ProcessState): ProcessState {
@@ -50,7 +51,7 @@ export class PiProcess {
   private expectedSdkVersion?: string;
   onRecord: (record: RecordValue) => void = () => {};
   onState: (state: ProcessState, reason?: string) => void = () => {};
-  constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string) {}
+  constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string, private readonly finalAnswerEvidence = false) {}
   private set(next: ProcessState, reason?: string) { this.state = transition(this.state, next); this.onState(this.state, reason); }
   async start(): Promise<void> {
     if (this.state !== 'stopped') throw new Error('worker already started');
@@ -65,14 +66,15 @@ export class PiProcess {
       const fixture = process.env.PI_CONSOLE_WORKER_COMMAND || undefined;
       if (fixture && (!isAbsolute(fixture) || !existsSync(fixture))) throw new Error('PI_CONSOLE_WORKER_COMMAND must be an absolute existing worker script');
       const sdk = fixture ? undefined : resolvePiSdk(piExecutable());
+      if(this.finalAnswerEvidence && sdk && sdk.version !== '1.0.2') throw new Error('final_answer_sdk_unverified');
       this.expectedSdkVersion = sdk?.version;
       const entry = fixture ?? fileURLToPath(new URL('../../../package/sdk-worker.mjs', import.meta.url));
-      const args = [entry, '--generation', generation, '--extension', consoleExtension(), ...(sdk ? ['--sdk-entry', sdk.entry, '--sdk-version', sdk.version] : []), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
+      const args = [entry, ...(this.finalAnswerEvidence ? ['--final-answer-evidence'] : []), '--generation', generation, '--extension', consoleExtension(), ...(sdk ? ['--sdk-entry', sdk.entry, '--sdk-version', sdk.version] : []), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
       // SDK hosts have no Pi CLI in argv, and global npm packages are not
       // visible to extension-relative module resolution. Bind child discovery to
       // the same verified Pi installation as this worker, before extensions load.
       // Do not mutate the server environment or inherit a stale host override.
-      const env = sdk ? { ...process.env, PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT: sdk.packageRoot } : process.env;
+      const env = piWorkerEnvironment(process.env,sdk?.packageRoot);
       const child = spawn(process.execPath, args, { cwd: this.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
       child.stdin.on('error', error => { if (!this.intendedStop) { this.fail(error); child.kill(); } });

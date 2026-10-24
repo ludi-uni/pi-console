@@ -1,0 +1,15 @@
+# トンネル期間と短命資格更新のdummy契約
+
+新しい独立Temp試作だけを変更する。旧期限試作405ファイル、旧directory試作413、保全archive725、D source315と既存docsをhash照合する。実credential、実grant、実provider、native、Pi、Dots、startup、本番設定には接続しない。
+
+最短UXは一画面で「対象・操作・トンネルと同じ利用期間（7日/31日/明示した期限なし）」を承認し、その条件が続く間は短命資格をcompanionが更新すること。初回の確認文に同じclient/対象の検証済みdaemon再接続を含める。本人cookieは初回承認にだけ必要で、継続許可の期限を短くしない。取消はいつでも現在の承認済みclientから行え、更新と新しい操作を止める。送信済み本文や作成物、実行中Piを削除・停止した意味にはしない。
+
+初回grantにowner/client instance/target/operations/tunnel id/初回daemon世代/初回Console世代/絶対期限または明示none/再起動継続の承認を固定する。更新はこれを変更しない。短命accessは5分（dummy設計値）で、read/control/final用の異なるdummyタグを持つ。final本文権限は追加しない。無期限access bearerを発行しない。
+
+fake verifierが発行した不透明proofだけを信頼する。clientInfo/表示名/PIDだけでは認証しない。初回と同一条件を証明した新daemon/Console世代は、固定grantを変えずlineageへ追加し、旧世代資格を無効化して新しい資格系列へ切り替える。不明な世代、別client、別target/session、範囲変更はその試行を拒否する。正規clientが旧refreshを別requestで再使用した場合は系列を停止する。未認証者の任意文字列だけで他clientの系列を解除するDoSは認めない。
+
+refreshは毎回rotationする。応答喪失後の同じrequest/同じ入力/同じ認証proofの再試行は、短い回収期間内に限り同じreceiptを返し、もう一度rotationしない。後続rotationや再起動後の古いreceiptは資格を復活させない。取消・期限切れ・clock rollback・再利用検知を保存し、再読込後も更新しない。保存の不確実性では停止し、再読込で確定状態を照合する。
+
+7日/31日は承認時の絶対終了時刻。再接続や更新で起点をずらさない。noneは期限値欠落/null/巨大数値ではなく明示型と追加確認を要求する。トンネルが途絶したら利用を停止し、既知の一時切断だけは同一条件のproofで再接続できる。取消されたleaseは自動再接続できない。
+
+現在のnative verifierは同じviewと保持したpipeを検証するだけで、再起動継続proofや実refreshを提供していない。今回のproof/tokenは公開dummyタグで、実認証の安全性や実Dotsの対応を証明しない。HTTP MCPでの標準OAuth/PKCE/refresh、保護された資格保存、実daemonの帰属と再起動証明、実providerの境界は未実装。directory全般のfile操作は今回も範囲外。

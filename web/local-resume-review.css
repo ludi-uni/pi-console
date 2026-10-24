@@ -1,0 +1,79 @@
+/* Widely available: native details, CSS Grid, @media and overflow-wrap.
+ * Scope every rule to the confirmation view so the setup/list screens retain their behavior. */
+.resume-review{margin-top:16px;color:#172238;line-height:1.65;min-width:0}
+.resume-review *{box-sizing:border-box}
+.resume-review .resume-review__heading{margin-bottom:20px}
+.resume-review .resume-review__step{margin:0 0 6px;font-size:.83rem;font-weight:700;color:#455c91;letter-spacing:.04em}
+.resume-review h3{margin:0 0 8px;font-size:1.4rem;line-height:1.4;color:#15243d}
+.resume-review p{margin:0;overflow-wrap:anywhere}
+.resume-review__heading>p:last-child{color:#4a5870}
+.resume-review .resume-review__summary{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:1px;margin:0 0 20px;border:1px solid #ccd6e7;border-radius:12px;background:#ccd6e7;overflow:hidden}
+.resume-review__summary>div{min-width:0;padding:18px 20px;background:#f3f6fc}
+.resume-review__summary>.resume-review__folder{grid-column:1/-1;background:#edf3ff}
+.resume-review dt{margin-bottom:8px;font-size:.86rem;font-weight:700;color:#405474}
+.resume-review dd{margin:0;min-width:0}
+.resume-review code{display:block;max-width:100%;white-space:normal;overflow-wrap:anywhere;word-break:normal;font-family:Consolas,monospace;font-size:.94rem;color:#223754}
+.resume-review__folder code{font-size:1.06rem;font-weight:700;line-height:1.65}
+.resume-review__summary dd>p{margin-top:8px;font-size:.9rem;color:#465773}
+.resume-review__summary ul{margin:0;padding-left:1.2em}
+.resume-review__summary li+li{margin-top:4px}
+.resume-review__summary strong{font-size:1.04rem}
+.resume-review__identity{padding:0 0 18px;border-bottom:1px solid #d7dfeb}
+.resume-review__identity code{margin-top:8px;padding:10px 12px;border:1px solid #d7dfeb;border-radius:6px;background:#fff}
+.resume-review__limits{padding:18px 0}
+.resume-review h4{font-size:.96rem;margin:0 0 6px;font-weight:700;color:#243852}
+.resume-review__limits p+p{margin-top:8px}
+.resume-review__limits h4:not(:first-child){margin-top:18px}
+.resume-review .resume-review__technical{border:1px solid #d4ddea;border-radius:8px;background:#fff}
+.resume-review__technical>summary{cursor:pointer;min-height:44px;padding:11px 14px;font-size:.91rem;font-weight:600;color:#405474;overflow-wrap:anywhere}
+.resume-review__technical>div{border-top:1px solid #e1e7f0;padding:14px;font-size:.9rem}
+.resume-review__technical dl{margin:14px 0}
+.resume-review__technical dl>div+div{margin-top:12px}
+.resume-review__technical code{font-size:.85rem}
+.resume-review .resume-review__consent{display:flex;align-items:flex-start;gap:10px;margin:22px 0 14px;padding:14px;border:1px solid #bccce5;border-radius:8px;background:#f5f8fe;font-size:.96rem;font-weight:600;cursor:pointer}
+.resume-review .resume-review__consent input[type=checkbox]{flex:0 0 auto;width:20px;height:20px;min-height:0;margin:3px 0 0;padding:0}
+.resume-review__actions{display:flex;gap:12px;flex-wrap:wrap}
+.resume-review .resume-review__actions button{margin:0;min-height:46px;padding:10px 22px;border-radius:8px;font:inherit;font-weight:600;max-width:100%;cursor:pointer;box-shadow:none;transition:none}
+.resume-review .resume-review__primary{color:#fff;background:#304d94;border:1px solid #304d94}
+.resume-review .resume-review__primary:hover:not(:disabled){background:#233d79;border-color:#233d79}
+.resume-review .resume-review__primary:disabled{color:#fff;background:#65779f;border-color:#65779f;opacity:1;cursor:not-allowed}
+.resume-review .resume-review__secondary{color:#304466;background:#fff;border:1px solid #a8b7cf}
+.resume-review .resume-review__secondary:hover:not(:disabled){background:#edf2fa;border-color:#7c91b3}
+.resume-review .resume-review__actions button:disabled{cursor:not-allowed}
+.resume-review button:focus-visible,.resume-review summary:focus-visible,.resume-review input:focus-visible{outline:3px solid #304d94;outline-offset:3px}
+@media(max-width:600px){
+ .resume-review h3{font-size:1.24rem}
+ .resume-review .resume-review__summary{grid-template-columns:minmax(0,1fr)}
+ .resume-review__summary>div{padding:14px}
+ .resume-review__actions{flex-direction:column;gap:10px}
+ .resume-review .resume-review__actions button{width:100%}
+ .resume-review .resume-review__consent{padding:12px}
+}
+
+/* OFF view has no transport, credentials or permission mutations. */
+.resume-off{min-width:0;color:#172238;line-height:1.65}
+.resume-off p{margin:8px 0;overflow-wrap:anywhere}
+.resume-off .resume-off__notice{margin:14px 0 18px;padding:14px 16px;border:1px solid #bdcbe1;border-left:4px solid #60759b;border-radius:8px;background:#edf2f9;color:#263b5b}
+.resume-off__notice strong{font-size:1.06rem}
+.resume-off button{color:#233d67;background:#fff;border:1px solid #9baecb;font:inherit;min-height:44px}
+.resume-off button:hover:not(:disabled){background:#edf3ff;border-color:#5b77a9}
+.resume-off button:disabled{color:#56627b;background:#e3e8f1;border-color:#c0cada;opacity:1;cursor:not-allowed}
+.resume-off .resume-off__preview{color:#fff;background:#304d94;border-color:#304d94;font-weight:600}
+.resume-off .resume-off__preview:hover{background:#233d79}
+.resume-off__form{margin-top:16px}
+.resume-off__form h3{margin:0 0 12px}
+.resume-off__form input:not([type=checkbox]),.resume-off__form select{background:#fff;color:#172238}
+.resume-off__operations{margin:16px 0}
+.resume-off__operations input[type=checkbox]{width:18px;height:18px;min-height:0;margin-right:8px}
+.resume-off__actions{display:flex;flex-wrap:wrap;gap:10px}
+.resume-off .resume-off__actions button{margin:0}
+.resume-off button:focus-visible,.resume-off input:focus-visible,.resume-off select:focus-visible{outline:3px solid #304d94;outline-offset:3px}
+@media(max-width:600px){.resume-off__actions{flex-direction:column}.resume-off .resume-off__actions button{width:100%}}
+
+/* The normal Console can use a dark palette; keep the OFF review canvas readable. */
+.local-mcp-settings .resume-off{background:#f4f7fc;border-color:#c9d4e6;border-radius:12px}
+
+
+/* Keep ordinary connection actions readable inside the light owner canvas, including dark Console palettes. */
+.resume-active button:not(.resume-review__primary):not(.resume-review__secondary){color:#233d67;background:#fff;border:1px solid #9baecb;font:inherit;min-height:44px}
+.resume-active button:not(.resume-review__primary):not(.resume-review__secondary):disabled{color:#56627b;background:#e3e8f1;border-color:#c0cada;opacity:1}

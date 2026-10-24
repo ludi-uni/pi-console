@@ -1,0 +1,9 @@
+# 自己レビュー
+
+独立reviewerは起動していない。承認済みgrant読取と通常資格更新を分離した。new grantを作るAPIは設けず、issuer/vault/runtimeは必須の未接続portにした。constructorやmodule importで実接続/発行/保存/listener起動を開始しない。
+
+初回承認7/31日/明示none、senderとscope/transport、clock checkpoint、短期資格・vault receiptの回収期限とcurrent epoch、runtime比較付きactivate、取消と部分失敗を確認した。資格更新では承認を変更しない。owner cookieを通常更新に呼ばない。
+
+レビューで取消応答をそのまま返すと、想定外private envelopeが公開結果へ漏れる危険を見つけた。cancel応答をstate/requestIdの2項目だけに制限し、RED→GREENで検証した。vault回収bundleのexpiresAtもruntime側の現行期限と照合する。資格無効化や取消保存が不明なら成功とせずunknownとして止まる。更新の再試行は同じrequestで3回/2分以内に限定し、backoffする。
+
+fixtureのproofは実認証ではない。real SenderPort・IssuerPort・保護VaultPort・runtimeの原子的rotation/clock checkpointが不足している。protected:trueという型宣言自体を実保存保護の証拠にしない。現行Folder/Pi/nativeへの登録、実client capability、real issuer/vault implementationの安全性は未検証。native/OS sandboxや実接続PASSは主張しない。

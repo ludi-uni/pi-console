@@ -1,0 +1,16 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import SettingsLocalMcp from '../web/SettingsLocalMcp.tsx';
+import SettingsPage from '../web/SettingsPage.tsx';
+import WorkspacePermissions from '../web/WorkspacePermissions.tsx';
+import FioConnection from '../web/FioConnection.tsx';
+import {defaultPreferences} from '../web/preferences.ts';
+const html=(component:React.ElementType,props:any={})=>renderToStaticMarkup(React.createElement(component,props));
+test('normal local MCP settings directly expose inert OFF preview without owner login',()=>{const s=html(SettingsLocalMcp);assert(s.includes('Local connection disabled'));assert(s.includes('権限機能はOFFです'));assert(s.includes('画面の流れを確認'));assert(s.includes('disabled="" title="権限機能がOFFのため開始できません"'));});
+test('settings has one local MCP entry and no separate Dots permissions menu',()=>{const s=html(SettingsPage,{preferences:defaultPreferences,onChange:()=>{},onBack:()=>{},workspaceCount:0,sessionCount:0,connected:true});assert(s.includes('Local MCP'));assert(!s.includes('Dots workspace permissions'));});
+test('initial settings leave legacy managers unmounted behind explicit navigation',()=>{const s=html(SettingsLocalMcp);assert(s.includes('既存の接続・権限を管理'));assert(!s.includes('Dots connection'));assert(!s.includes('MCP stdio configuration'));assert(!s.includes('Confirm owner removal'));});
+test('embedded permission controls exclude frozen diagnostics and retain exact scope explanation',()=>{const s=html(WorkspacePermissions,{ja:true,embedded:true});assert(!s.includes('凍結中の隔離 mode 診断'));assert(s.includes('control')&&s.includes('session'));assert(s.includes('Final')||s.includes('final'));});
+test('standalone permission compatibility still includes unchanged diagnostics entry',()=>{assert(html(WorkspacePermissions,{ja:true}).includes('凍結中の隔離 mode 診断'));});
+test('existing Pi connection UI uses Dots instead of the pet name',()=>{const s=html(FioConnection);assert(s.includes('Dotsにつなぐ'));assert(!s.includes('フィオ'));assert(s.includes('Dots connection'));});

@@ -4,6 +4,8 @@ import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import type { SessionInfo, Workspace } from '../../shared/types.ts';
 import { splitPromptAttachments } from '../../shared/attachments.ts';
+import type { ManagedFolderEntry } from '../windows-folder-provider.ts';
+import { canonicalParent, childName } from '../folder-mcp.ts';
 
 export function pathKey(path: string): string { return resolve(path).replace(/[\\/]+$/, '').toLowerCase(); }
 export class WorkspaceStore {
@@ -11,6 +13,8 @@ export class WorkspaceStore {
   private prompts: string[] = ['続きを実装して', 'テストして', '原因を調べて'];
   private pending: Promise<unknown> = Promise.resolve();
   constructor(private file: string) {}
+  /** Internal provider assembly metadata; never exposed as an HTTP/MCP capability. */
+  managedRegistryDirectory(): string { return dirname(resolve(this.file)); }
   async load() { try { const saved=JSON.parse(await fs.readFile(this.file, 'utf8')); this.items=Array.isArray(saved)?saved:saved.workspaces??[];this.prompts=Array.isArray(saved.quickPrompts)?saved.quickPrompts:[]; } catch (error: any) { if (error.code !== 'ENOENT') throw error; } }
   list() { return [...this.items].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||b.lastOpenedAt.localeCompare(a.lastOpenedAt)); }
   async listWithValidity() { return Promise.all(this.list().map(async w=>({...w,valid:await fs.stat(w.path).then(s=>s.isDirectory(),()=>false)}))); }
@@ -44,6 +48,34 @@ export class WorkspaceStore {
     item.lastOpenedAt = new Date().toISOString();
     await this.save();
     return item;
+  }
+  /** Trusted provider-only, create-only metadata registration. No realpath/stat/Git/Pi.
+   * A native parent/child lease must enclose this call and every guard invocation.
+   * Existing add() deliberately remains separate: it reuses existing rows. */
+  async registerManagedNew(entry: ManagedFolderEntry, guard: () => void): Promise<Workspace> {
+    const display = canonicalParent(entry.displayPath), name = childName(entry.name);
+    const physical = /^\\\\\?\\Volume\{[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\}\\(.+)$/i.exec(entry.stablePath);
+    if (!physical || physical[1].toLowerCase() !== display.slice(3) || display.split('\\').at(-1) !== name.toLowerCase()
+      || !/^[a-f0-9]{16}$/.test(entry.volume) || !/^[a-f0-9]{32}$/.test(entry.fileId)) throw Error('invalid managed workspace');
+    const next = this.pending.then(async () => {
+      guard();
+      if (this.items.some(w => [entry.displayPath, entry.stablePath].some(p => pathKey(w.path) === pathKey(p)))) throw Error('managed workspace already registered');
+      const item: Workspace = { id: randomUUID(), path: entry.stablePath, name, pinned: false, lastOpenedAt: new Date().toISOString() };
+      guard(); await fs.mkdir(dirname(this.file), { recursive: true });
+      const temp = `${this.file}.${randomUUID()}.tmp`;
+      try {
+        guard(); await fs.writeFile(temp, JSON.stringify({ workspaces: [...this.items, item], quickPrompts: this.prompts }, null, 2), { flag: 'wx' });
+        for (let attempt = 0;; attempt++) {
+          guard();
+          try { await fs.rename(temp, this.file); break; }
+          catch (error: any) { if (!['EPERM', 'EACCES'].includes(error.code) || attempt >= 3) throw error; await new Promise(resolve => setTimeout(resolve, 40 * (attempt + 1))); }
+        }
+        // A successful atomic metadata commit stays committed even if the lease expires
+        // just afterward; receipt reconciliation must report it, never retry/create again.
+        this.items.push(item); return item;
+      } finally { await fs.rm(temp, { force: true }).catch(() => {}); }
+    });
+    this.pending = next.catch(() => {}); return next;
   }
 }
 export function piSessionDir(): string { return process.env.PI_CODING_AGENT_SESSION_DIR ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'sessions'); }

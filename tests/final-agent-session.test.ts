@@ -1,0 +1,88 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,readFile,rm,access} from 'node:fs/promises';
+import {join,dirname} from 'node:path';
+import {tmpdir} from 'node:os';
+import {pathToFileURL} from 'node:url';
+import {createHash} from 'node:crypto';
+import {createServer} from 'node:http';
+import {once} from 'node:events';
+import {WorkspaceStore} from '../server/runtime/workspaces.ts';
+import {WorkspacePermissions} from '../server/workspace-permissions.ts';
+import {createFinalOwnerComposition} from '../server/final-owner-composition.ts';
+import {dummyReadKey} from './final-answer.fixture.ts';
+import {startOwnerPin} from './helpers/final-owner-pin.ts';
+const answer='REAL_AGENT_SESSION_FIXED_RESPONSE 日本語😀\nNo external model or credentials.\n';
+const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
+async function until(check:()=>Promise<boolean>,label:string){const deadline=Date.now()+10000;while(!await check()){if(Date.now()>deadline)throw Error(label);await new Promise(r=>setTimeout(r,20));}}
+test('real SDK AgentSession -> ordinary worker/Console ACK -> saved journal -> owner adapter/pin; unsaved and abort fail closed',{timeout:60000},async()=>{
+ const output=process.env.FINAL_AGENT_PROOF_PATH;
+ if(!output||!/^docs\/dots-agent-session-proof-[a-z0-9]+\.json$/.test(output))throw Error('EXPLICIT_NEW_PROOF_REQUIRED');
+ const root=await mkdtemp(join(tmpdir(),'final-agent-session-'));
+ const old={...process.env};
+ let comp:ReturnType<typeof createFinalOwnerComposition>|undefined,pin:Awaited<ReturnType<typeof startOwnerPin>>|undefined,server:ReturnType<typeof createServer>|undefined;
+ let proof:any;
+ try{
+  const entry=process.env.FINAL_TEST_SDK_ENTRY,binary=process.env.FINAL_TEST_BINARY;assert(entry&&binary,'explicit installed SDK and pin required');
+  assert.equal(JSON.parse(await readFile(join(dirname(dirname(entry)),'package.json'),'utf8')).version,'1.0.2');
+  const workspace=join(root,'workspace'),agent=join(root,'agent'),sessions=join(root,'sessions');for(const p of [workspace,agent,sessions])await mkdir(p);
+  const facade=join(root,'sdk.mjs'),launcher=join(root,'worker.mjs');
+  await writeFile(facade,`export * from ${JSON.stringify(pathToFileURL(entry).href)};export {createAgentSessionServices,createAgentSessionFromServices} from ${JSON.stringify(new URL('./helpers/real-final-sdk.mjs',import.meta.url).href)};`);
+  await writeFile(launcher,`process.argv.push('--sdk-entry',${JSON.stringify(facade)},'--sdk-version','1.0.2');await import(${JSON.stringify(new URL('../package/sdk-worker.mjs',import.meta.url).href)});`);
+  // Parent test process is already allowlisted; tighten again before PiProcess copies it.
+  for(const k of Object.keys(process.env))delete process.env[k];
+  for(const k of ['SystemRoot','WINDIR','PATH','PATHEXT','ComSpec'])if(old[k])process.env[k]=old[k];
+  for(const k of ['HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP'])process.env[k]=root;
+  Object.assign(process.env,{PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:sessions,PI_OFFLINE:'1',PI_CONSOLE_WORKER_COMMAND:launcher,FINAL_AGENT_FIXTURE_ROOT:root,FINAL_TEST_SDK_ENTRY:entry,FINAL_TEST_BINARY:binary});
+  assert(!Object.keys(process.env).some(k=>/API_KEY|TOKEN|SECRET|PI_SESSION|PI_CONSOLE_DATA|ACCESS|PUBLIC_ORIGIN/.test(k)));
+  const store=new WorkspaceStore(join(root,'workspaces.json')),w=await store.add(workspace),permissions=new WorkspacePermissions(join(root,'permissions.json'));
+  comp=createFinalOwnerComposition(store,permissions,{sessionsRoot:sessions,queueDir:join(root,'queue'),reportRecoveryDir:join(root,'reports'),journalDir:join(root,'journal')},{enabled:true,accessMode:'local',authentication:{mode:'shared_secret',key:dummyReadKey},legacyCredentialKeys:['a1'.repeat(32),'b2'.repeat(32)]});
+  const c=comp,runtime=c.runtime,a=await runtime.create(w.id);
+  assert.equal((await a.worker.call('get_state')).data.model.provider,'console-fixed-local');
+  assert.equal((JSON.parse(await readFile(join(root,'provider-trace.json'),'utf8'))).realAgentSession,true);
+  const records:any[]=[];const ingest=a.worker.onRecord;
+  a.worker.onRecord=r=>{records.push({type:r.type,stopReason:r.message?.stopReason,storage:r.state});ingest(r);};
+  await permissions.replace(permissions.instance,0,[{id:w.id,path:w.path,scope:'read',sessions:[{id:a.session.id,generation:a.state.generation}]}],async()=>[{id:w.id,path:w.path,eligible:true,sessions:[{id:a.session.id,generation:a.state.generation}]}]);
+  server=createServer((req,res)=>void c.handle(req,res).then(ok=>{if(!ok){res.writeHead(404);res.end();}}).catch(()=>{res.writeHead(500);res.end();}));server.listen(0,'127.0.0.1');await once(server,'listening');const port=(server.address() as any).port;assert(![31717,31718,31719].includes(port));const base=`http://127.0.0.1:${port}`;
+  const post=async(route:string,body:any)=>{const r=await fetch(base+'/api/workspace-permissions/final/'+route,{method:'POST',headers:{origin:base,'sec-fetch-site':'same-origin','x-pi-console-admin':'1','content-type':'application/json'},body:JSON.stringify(body)});return {status:r.status,body:await r.json()};};
+  const readState=async()=>{const r=await post('session',{});assert.equal(r.status,200);return r.body;};
+  const targetFor=async(runId:string)=>{const s=await permissions.snapshot();return {instance:permissions.instance,revision:s.revision,workspaceId:w.id,sessionId:a.session.id,generation:a.state.generation,runId};};
+  const adapterRead=async(target:any)=>{const r=await fetch(base+'/mcp/dots',{method:'POST',headers:{'x-pi-console-dots-read-key':dummyReadKey,'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2026-07-28','mcp-method':'tools/call','mcp-name':'read_final_answer'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'read_final_answer',arguments:target,_meta:{'io.modelcontextprotocol/protocolVersion':'2026-07-28','io.modelcontextprotocol/clientCapabilities':{},'io.modelcontextprotocol/clientInfo':{name:'fixed-local-acceptance',version:'1'}}}})});assert.equal(r.status,200,'adapter HTTP status');return (await r.json()).result;};
+  const save=async(target:any|null)=>{const v=await readState(),review=await post('review',{instance:v.instance,revision:v.revision,target,expiresAt:target?Date.now()+60000:null});assert.equal(review.status,200);const saved=await post('save',{reviewId:review.body.reviewId,requestId:review.body.requestId,confirmed:true});assert.equal(saved.status,200);return saved.body;};
+  // No manual preparePrompt/accepted/ingest/evidence.finish/appendMessage calls.
+  const runId=await runtime.prompt(w.id,a.session.id,'FIXED_LOCAL_SUCCESS');
+  await until(()=>access(join(root,'provider-started-1')).then(()=>true,()=>false),'provider did not start');
+  await a.state.flushFinalAnswers();const pending=await runtime.readOnlyFinalAnswer(w.id,a.session.id,a.state.generation,runId);assert.notEqual(pending?.storage,'saved');assert.equal(pending?.deliveryConfirmed,true);
+  assert(!records.some(r=>r.type==='console_final_answer_saved'||r.type==='agent_settled'));
+  assert.equal((await readState()).choices.length,0);
+  assert.equal((await adapterRead(await targetFor(runId))).isError,true);
+  await writeFile(join(root,'provider-release-1'),'release');
+  await until(async()=>records.some(r=>r.type==='agent_settled'),'SDK did not settle');await a.state.flushFinalAnswers();
+  const stored=await runtime.readOnlyFinalAnswer(w.id,a.session.id,a.state.generation,runId);
+  assert.equal(stored?.storage,'saved');assert.equal(stored?.deliveryConfirmed,true);assert.equal(stored?.foregroundStatus,'completed');assert.equal(stored?.text,answer);
+  const rows=(await readFile(a.session.filePath,'utf8')).trim().split('\n').map(l=>JSON.parse(l));const message=rows.slice().reverse().find((r:any)=>r.type==='message'&&r.message.role==='assistant').message;
+  assert.equal(message.stopReason,'stop');assert.equal(message.content[0].text,answer);assert.equal(message.provider,'console-fixed-local');
+  const v=await readState();assert.equal(v.choices.length,1);assert.equal(v.choices[0].target.runId,runId);
+  const saved=await save(v.choices[0].target),target=saved.publication.target;
+  pin=await startOwnerPin(root,base);const catalog=await pin.command('tools/list');assert.deepEqual(catalog.tools.map((x:any)=>x.name),['read_final_answer']);
+  const discovered=Object.fromEntries(Object.entries(catalog.tools[0].inputSchema.properties).filter(([k])=>Object.hasOwn(target,k)).map(([k,p])=>[k,(p as any).const]));assert.deepEqual(discovered,target);
+  let text='',cursor:string|undefined,hash='';do{const r:any=await pin.command('tools/call',{name:'read_final_answer',arguments:{...discovered,limit:32,...(cursor?{cursor}:{})}});assert.equal(r.isError,false);text+=r.structuredContent.text;hash=r.structuredContent.sha256;cursor=r.structuredContent.nextCursor??undefined;}while(cursor);
+  assert.equal(text,answer);assert.equal(sha(text),hash);assert.equal(sha(message.content[0].text),hash);
+  const successfulBodyCalls=pin.calls();await save(null);assert.equal((await pin.command('tools/call',{name:'read_final_answer',arguments:target})).isError,true);
+  records.length=0;const abortedRun=await runtime.prompt(w.id,a.session.id,'FIXED_LOCAL_ABORT');
+  await until(()=>access(join(root,'provider-started-2')).then(()=>true,()=>false),'abort provider did not start');
+  assert.notEqual((await runtime.readOnlyFinalAnswer(w.id,a.session.id,a.state.generation,abortedRun))?.storage,'saved');
+  await runtime.stop(w.id,a.session.id);await until(async()=>records.some(r=>r.type==='agent_settled'),'abort did not settle');await a.state.flushFinalAnswers();
+  const stopped=await runtime.readOnlyFinalAnswer(w.id,a.session.id,a.state.generation,abortedRun);assert.notEqual(stopped?.storage,'saved');assert.notEqual(stopped?.foregroundStatus,'completed');
+  assert(!records.some(r=>r.type==='console_final_answer_saved'&&r.storage==='saved'));assert(!(await readState()).choices.some((c:any)=>c.target.runId===abortedRun));assert.equal((await adapterRead(await targetFor(abortedRun))).isError,true);
+  const trace=JSON.parse(await readFile(join(root,'provider-trace.json'),'utf8'));assert.deepEqual([trace.requests,trace.completed,trace.aborted,trace.blockedNetwork,trace.wrongModel],[2,1,1,0,0]);
+  assert.equal(runtime.controlIsolationVerified(),false);
+  proof={schemaVersion:1,status:'real_agent_session_saved_final_and_abort_accepted',sdkVersion:'1.0.2',provider:'fixed_in_process_keyless',realAgentSession:trace.realAgentSession,normalSdkWorker:true,consoleAckFromRuntimePrompt:true,manualLifecycleAckOrPersistence:false,persistedFinalSha256:hash,clientTextSha256:sha(text),utf8Bytes:Buffer.byteLength(text),successfulBodyCalls,catalogExactRunMatch:true,pinSha256:pin.pin,revokeDenied:true,beforeSaveDenied:true,abortFinalDenied:true,providerTrace:trace,actualDotsConnected:false,productionApplied:false,osIsolationClaimed:false,sameSidRiskResolved:false};
+ }finally{
+  await pin?.cleanup();if(server){server.closeAllConnections();await new Promise<void>(r=>server!.close(()=>r()));}await comp?.runtime.shutdown();comp?.dispose();
+  for(const k of Object.keys(process.env))delete process.env[k];Object.assign(process.env,old);
+  await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+ }
+ assert(proof);assert.equal(await access(root).then(()=>true,()=>false),false);proof.ownedWorkerPinAndHttpClosed=true;proof.tempRemoved=true;
+ await writeFile(output,JSON.stringify(proof,null,2)+'\n',{flag:'wx'});
+});

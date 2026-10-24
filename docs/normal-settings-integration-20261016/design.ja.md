@@ -1,0 +1,7 @@
+通常設定→ローカルMCPに既存LocalResumeMcp available=falseを直接置く。独立permissionsメニューはなくす。既存owner/Fio/Folder/WorkspacePermissionsは同じ設定内の明示的な管理展開から到達可能にする。preview操作はこの管理のpending/grantに触れない。
+
+SettingsLocalMcpはjaを受け取り、管理を開く/閉じる・権限管理を開く/戻るを明示する。権限editorは全体scopeであることと、親folderからPi control/final共有が付かないことを説明する。既存auth/statusが失敗すれば表示上のowner状態を消してfail closed。Fio/Folderは厳密なauthenticatedOwner===trueでのみ表示する。権限editorのbackendガード/API prefixは従来どおり。
+
+WorkspacePermissionsはembedded表示のときだけ凍結診断をmountしない。診断のsource/実装/OS検証は対象外。read/control/final/session API処理は変えない。FioConnectionのUI/ariaのフィオ表記はDotsへ変更し、storage/API/function名など内部識別子は維持する。
+
+変更はSettingsPage/SettingsLocalMcp/WorkspacePermissions/FioConnectionと関連navigationテスト。既存テスト3本は入口セレクタだけ更新し、OS/外部MCP helperを呼ぶaggregate・旧E2Eはそのまま実行しない。新focused SSRのRED/GREENと通常SettingsPageそのもののloopback/fake API・headless UIで確認する。回帰・type/build後にscope固定、source更新対象+現在dist全体のbackup、assets先行・HTML最後の静的適用。再起動/新key/grant/transport/権限有効化なし。

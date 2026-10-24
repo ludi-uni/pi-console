@@ -1,0 +1,11 @@
+# 次段階を具体化する条件
+
+今回はdummy file/mockだけで完了し、新たな承認待ちはない。
+
+実用providerを進めるなら、まず保存形式・DPAPI adapter・独立rollback/fencing方針・fault時のruntime解除・本人binding/承認再開の契約を隔離sourceとしてreview可能にする。その後、必要なOS専用受入の正確な入口、target、公開dummy値、回数、所有file、cleanupを本人へ提示して承認を得る。今回のDPAPI成功記録はこのbackendと接続した試験の代わりではない。OS crypto/vault再実行は今回未承認。
+
+実credential生成・保存・配布、実grant、ローカルMCP listener、有効化・client接続は別の本人明示UI承認を要する。read/control/finalは内部で分離したまま、人に3本生成させない。対応clientは一次仕様と実機能を確認した範囲だけを案内し、未対応clientには最小fallbackを提示する。
+
+稼働Dへのsource/dist反映、stop/restart、Startup変更は未承認・未実行。公開dummy file backendをそのまま適用する承認は求めない。実用providerのblockerを解消した具体差分を先に作る必要がある。
+
+解除は保存stateとruntimeアクセスの無効化であり、送信済本文・作成済repoの削除ではない。親folder管理からrun/history/final本文の包括許可は導かない。Pi全体OS sandboxの実装・試験は対象外。pi-wardenは凍結を維持する。

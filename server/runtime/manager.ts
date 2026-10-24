@@ -1,3 +1,9 @@
+import { readOnlySessionHeaders } from './readonly-sessions.ts';
+import { randomUUID } from 'node:crypto';
+import { FinalAnswerJournal } from './final-answer-journal.ts';
+import type { ResultProjection } from '../../shared/results-read.ts';
+import { ControlRejection, type ControlExpectation } from './control-target.ts';
+import {localControlAssertion} from './local-control-ticket.ts';
 import { PiProcess } from '../adapters/pi/process.ts';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { access, lstat, realpath, stat } from 'node:fs/promises';
@@ -27,8 +33,103 @@ export class RuntimeManager {
   private kitRuns = new Map<string, { workspaceId: string; running: boolean; preparing?: boolean; request: string; startedAt: string; runId?: string; error?: string; finishedAt?: string; progress?: string[]; report?: string; reporting?: boolean; reportedToPi?: boolean; reportError?: string; reportHandled?: boolean; needsInput?: boolean; reportDispatchAttempted?: boolean }>();
   private readonly reportStore?:ReportRecoveryStore;
   private readonly queueStore:QueueStore;
-  constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string, queueDir?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir);this.queueStore=new QueueStore(queueDir)}
+  private readonly resultsInstance = randomUUID();
+  private externalAdmissionGuard?:()=>Promise<()=>void>;
+  // Ordinary local Console use is separate, not advertised as isolated.
+  setExternalAdmissionGuard(guard:()=>Promise<()=>void>){this.externalAdmissionGuard=guard;}
+  constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string, queueDir?:string, private readonly finalAnswerDirectory?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir);this.queueStore=new QueueStore(queueDir)}
   get sessionRoot(){return this.sessionsRoot}
+  // Scope admission is not a tool/OS sandbox. These workers run as the owner
+  // and could otherwise write permission files or forge local-owner HTTP.
+  // No production isolation contract exists yet: never let a key/checkbox
+  // assert this property. Test doubles use their own isolated dummy runtime.
+  controlIsolationVerified():boolean { return false; }
+  // Native control never opens/resumes a worker and never answers approvals.
+  controlState(workspaceId:string,sessionId:string) {
+    const entry=this.active.get(sessionId);
+    if(!entry||entry.session.workspaceId!==workspaceId||entry.worker.state!=='running'||this.starting.has(sessionId)||this.retiring.has(sessionId))throw new ControlRejection('target_unavailable');
+    const nodes=entry.state.execution.snapshot().nodes, job=this.kitRuns.get(sessionId);
+    return {generation:entry.state.generation,busy:entry.state.busy,activeRunId:entry.state.activeRunId??null,
+      approvalRequired:nodes.some(n=>n.kind==='decision'&&['waiting','blocked','unknown'].includes(n.status)),
+      backgroundActive:nodes.some(n=>n.sourceKind==='pi-subagents'&&['queued','running','waiting','blocked','unknown'].includes(n.status)),
+      queuePending:entry.state.hasPendingQueue()||nodes.some(n=>n.sourceKind==='pi'&&n.id.startsWith('pi-queued:')&&n.status==='queued'),
+      kitOwnsSession:!!job&&(job.running||!!job.needsInput||!!job.reportError)||nodes.some(n=>n.sourceKind==='orchestrator'&&n.kind!=='decision'&&['queued','running','waiting','blocked','unknown'].includes(n.status))};
+  }
+  private controlEntry(workspaceId:string,sessionId:string,expected:ControlExpectation,start:boolean) {
+    const current=this.controlState(workspaceId,sessionId);
+    if(current.generation!==expected.generation)throw new ControlRejection('generation_changed');
+    if(current.kitOwnsSession)throw new ControlRejection('kit_owns_session');
+    if(start&&current.busy)throw new ControlRejection('session_busy');
+    if(start&&current.approvalRequired)throw new ControlRejection('approval_required');
+    if(start&&current.queuePending)throw new ControlRejection('queue_pending');
+    if(start&&current.backgroundActive)throw new ControlRejection('background_active');
+    return this.active.get(sessionId)!;
+  }
+  async controlAdmission(workspaceId:string,sessionId:string,expected:ControlExpectation) {
+    const localAssert=localControlAssertion(expected);
+    const assertExternal=localAssert??await this.externalAdmissionGuard?.();
+    assertExternal?.();
+    this.controlEntry(workspaceId,sessionId,expected,true);
+    try {if((await this.reportStore?.read(sessionId))?.status==='pending')throw new ControlRejection('kit_owns_session');}
+    catch(error){if(error instanceof ControlRejection)throw error;throw new ControlRejection('target_unavailable');}
+    this.controlEntry(workspaceId,sessionId,expected,true);
+    assertExternal?.();return assertExternal;
+  }
+  readOnlyRuntimeStatus(scope: { id: string; sessionIds: string[] }[]) {
+    const allowed = (workspaceId: string, sessionId: string) => scope.some(rule => rule.id === workspaceId && rule.sessionIds.includes(sessionId));
+    const active = [...this.active.values()].filter(entry => allowed(entry.session.workspaceId,entry.session.id));
+    const failed = [...this.failed.values()].filter(entry => allowed(entry.session.workspaceId,entry.session.id));
+    return { coverage: 'observed_scope_only' as const,
+      runningWorkers: active.filter(entry => entry.worker.state === 'running').length,
+      disconnectedWorkers: failed.length + active.filter(entry => entry.worker.state !== 'running').length,
+      startingWorkers: active.filter(entry => this.starting.has(entry.session.id)).length,
+      closingWorkers: [...active,...failed].filter(entry => this.retiring.has(entry.session.id)).length,
+      busyPiSessions: active.filter(entry => entry.state.busy).length,
+      runningOrchestrators: [...this.kitRuns.entries()].filter(([sessionId,job]) => job.running && allowed(job.workspaceId,sessionId)).length };
+  }
+  async readOnlySessions(workspaceId: string, allowedSessionIds?: readonly string[]) {
+    const workspace = this.workspaces.get(workspaceId);
+    const found = await readOnlySessionHeaders(workspace, this.sessionsRoot);
+    const allowed = allowedSessionIds ? new Set(allowedSessionIds) : undefined;
+    const sessions = new Map(found.sessions.filter(session => !allowed || allowed.has(session.id)).map(session => [session.id, session]));
+    for (const entry of [...this.active.values(), ...this.failed.values()]) {
+      if (entry.session.workspaceId === workspaceId && (!allowed || allowed.has(entry.session.id))) sessions.set(entry.session.id, { id: entry.session.id, updatedAt: entry.session.updatedAt ?? '' });
+    }
+    const ambiguousSessionIds = found.sessions.filter((session,index,all)=>all.findIndex(s=>s.id===session.id)!==index).map(s=>s.id);
+    return { ...found, ambiguousSessionIds, sessions: [...sessions.values()].slice(0, 1024), truncated: found.truncated || sessions.size > 1024 };
+  }
+  readOnlyObservation(workspaceId: string, sessionId: string) {
+    this.workspaces.get(workspaceId);
+    const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);
+    if (!entry || entry.session.workspaceId !== workspaceId) return undefined;
+    if (this.starting.has(sessionId) || this.retiring.has(sessionId)) return {
+      observation: this.starting.has(sessionId) ? 'starting' as const : 'closing' as const,
+      runtime: entry.worker.state, generation: undefined, seq: undefined, nodes: [], truncated: false,
+    };
+    return { observation: this.active.has(sessionId) && entry.worker.state === 'running' ? 'observed' as const : 'disconnected' as const,
+      runtime: entry.worker.state, generation: entry.state.generation, seq: entry.state.seq, ...entry.state.execution.readOnlyNodes() };
+  }
+  // Passive read only: no open/resume, worker.call, queue drain, disk history scan
+  // or kit/provider inspection. Existing projections cannot prove a complete census.
+  readOnlyResultProjection(workspaceId: string, sessionId: string): ResultProjection | undefined {
+    const observed = this.readOnlyObservation(workspaceId, sessionId);
+    const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);
+    if (!entry || entry.session.workspaceId !== workspaceId || !observed?.generation) return undefined;
+    const nodes = entry.state.execution.readOnlyResultNodes();
+    const events = entry.state.events;
+    return { generation: observed.generation, seq: entry.state.seq,
+      observedAt: events.length ? Date.parse(events.at(-1)!.timestamp) : 0,
+      live: observed.observation === 'observed', truncated: observed.truncated || nodes.length > 5000,
+      coverage: { pi: 'incomplete', subagents: 'incomplete', orchestrator: 'incomplete', queue: 'incomplete', background: 'incomplete' },
+      nodes,
+      events: structuredClone(events), messageRoles: Object.fromEntries(entry.state.chat.slice(-5000).map(m=>[m.id,m.role])), historyState: 'available',
+      metadata: { sessionName: entry.session.name ?? null, savedModel: null } };
+  }
+  async readOnlyFinalAnswer(workspaceId:string,sessionId:string,generation:string,runId:string) {
+    const observed=this.readOnlyObservation(workspaceId,sessionId),entry=this.active.get(sessionId)??this.failed.get(sessionId);
+    if(!entry||entry.session.workspaceId!==workspaceId||observed?.generation!==generation)return undefined;
+    return entry.state.readOnlyFinalAnswer(runId);
+  }
   async sessions(workspaceId: string) {
     const files = await listSessions(this.workspaces.get(workspaceId), this.sessionsRoot);
     for (const active of [...this.active.values(), ...this.failed.values()]) if (active.session.workspaceId === workspaceId && !files.some(s => s.id === active.session.id)) files.unshift(active.session);
@@ -72,7 +173,7 @@ export class RuntimeManager {
   }
   async create(workspaceId: string): Promise<Active> {
     const workspace = this.workspaces.get(workspaceId);
-    const worker = new PiProcess(workspace.path, undefined, this.sessionsRoot);
+    const worker = new PiProcess(workspace.path, undefined, this.sessionsRoot, !!this.finalAnswerDirectory);
     await worker.start();
     try {
       const data = (await worker.call('get_state',{},startupStateTimeoutMs)).data;
@@ -94,6 +195,7 @@ export class RuntimeManager {
   private attach(worker: PiProcess, session: SessionInfo): Active {
     const state = new SessionEvents(session, () => worker.state);
     state.setQueueStore(this.queueStore);
+    if(this.finalAnswerDirectory)state.setFinalAnswerJournal(new FinalAnswerJournal(this.finalAnswerDirectory,{runtimeInstance:this.resultsInstance,workspaceId:session.workspaceId,sessionId:session.id,generation:state.generation}));
     const entry: Active = { worker, state, session };
     this.drainSessionQueue(entry);
     worker.onRecord = record => state.ingest(record);
@@ -133,7 +235,7 @@ export class RuntimeManager {
     void (async () => {
       const session = (await listSessions(workspace, this.sessionsRoot)).find(s => s.id === sessionId);
       if (!session) throw new Error('session not found in workspace');
-      const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot);
+      const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot, !!this.finalAnswerDirectory);
       try {
         await worker.start();
         const data = (await worker.call('get_state',{},startupStateTimeoutMs)).data;
@@ -493,11 +595,12 @@ export class RuntimeManager {
     })();
     return { job };
   }
-  async prompt(workspaceId: string, sessionId: string, message: unknown, attachments: unknown = [], mode?: unknown): Promise<string> {
+  async prompt(workspaceId: string, sessionId: string, message: unknown, attachments: unknown = [], mode?: unknown, control?:ControlExpectation): Promise<string> {
     const prepared = prepareAttachments(message, attachments);
+    const assertExternal=control?await this.controlAdmission(workspaceId,sessionId,control):undefined;
     if (mode !== undefined && mode !== 'steer' && mode !== 'followUp') throw new Error('invalid prompt mode');
     if (this.kitRuns.get(sessionId)?.running||this.kitRuns.get(sessionId)?.needsInput) throw new Error('orchestrator is running or awaiting input for this session');
-    const { worker, state } = await this.open(workspaceId, sessionId);
+    const { worker, state } = control ? this.controlEntry(workspaceId,sessionId,control,true) : await this.open(workspaceId, sessionId);
     if (this.kitRuns.get(sessionId)?.running||this.kitRuns.get(sessionId)?.needsInput||state.execution.snapshot().nodes.some(n=>n.sourceKind==='orchestrator'&&n.kind==='decision'&&n.status==='waiting')) throw new Error('orchestrator is running or awaiting input for this session');
     if(this.retiring.has(sessionId))throw new Error('session is being recycled');
     if (state.busy) {
@@ -517,8 +620,13 @@ export class RuntimeManager {
     // An idle prompt must not bypass queued follow-ups: enqueue anything pending
     // first and refuse, preserving FIFO and preventing a surprise ordering change.
     if (state.hasPendingQueue()) throw new Error('this session has queued follow-ups; resume or remove them before sending a new prompt');
+    assertExternal?.();
     const id = state.preparePrompt(prepared.message);
-    try { await worker.call('prompt', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) }); state.accepted(); return id; }
+    try {
+      const ack=await worker.call('prompt', { message: prepared.message, consoleRunId:id, ...(control?{requireIdle:true,nativeAdmissionDeadline:Date.now()+15000}:{}), ...(prepared.images.length ? { images: prepared.images } : {}) });
+      if(control&&ack?.data?.disposition!=='started')throw new Error('control_prompt_start_unconfirmed');
+      state.accepted(id); return id;
+    }
     catch (error) { state.rejected((error as Error).message); throw error; }
   }
   // Drains a session's console-owned follow-up queue. Each iteration claims the head
@@ -554,7 +662,7 @@ export class RuntimeManager {
           });
           try {
             await entry.worker.call('prompt', { message: prepared.message, ...(prepared.images.length ? { images: prepared.images } : {}) });
-            entry.state.accepted();
+            entry.state.accepted(runId);
             const completed = await finished;
             // Wait for an observed terminal event, not an arbitrary runtime limit:
             // tools and subagents can legitimately take longer than four minutes.
@@ -585,17 +693,21 @@ export class RuntimeManager {
     await state.resumeQueue();
     return state.snapshot().queue ?? [];
   }
-  async stop(workspaceId: string, sessionId: string): Promise<void> {
+  async stop(workspaceId: string, sessionId: string, control?:ControlExpectation & {runId:string}): Promise<void> {
     const job=this.kitRuns.get(sessionId);
     if(job?.workspaceId===workspaceId&&job.running&&job.reporting)throw new Error('cannot stop while the orchestrator report is being saved to Pi');
-    const { worker, state } = await this.open(workspaceId, sessionId);
+    const { worker, state } = control ? this.controlEntry(workspaceId,sessionId,control,false) : await this.open(workspaceId, sessionId);
     if (!state.activeRunId) throw new Error('no active run');
     // Pause the pending queue BEFORE the awaited clear_queue: a settle arriving in
     // between would otherwise let the drain loop claim and send a queued item.
+    const checkExact=()=>{if(control){localControlAssertion(control)?.();const entry=this.controlEntry(workspaceId,sessionId,control,false);if(entry.worker!==worker||entry.state.activeRunId!==control.runId)throw new ControlRejection('run_not_active');}};
+    checkExact();
     await state.pauseQueue();
-    await worker.call('clear_queue');
+    checkExact();
+    await worker.call('clear_queue',control?{expectedConsoleRunId:control.runId}:{});
+    checkExact();
     state.markStop();
-    await worker.call('abort', {}, 60000);
+    await worker.call('abort', control?{expectedConsoleRunId:control.runId}:{}, 60000);
   }
   async resume(workspaceId: string, sessionId: string) { return (await this.open(workspaceId, sessionId)).state.snapshot(); }
   async snapshot(workspaceId: string, sessionId: string) {
