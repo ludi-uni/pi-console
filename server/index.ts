@@ -12,7 +12,7 @@ import { startupStatus, setStartup } from '../package/startup-manager.mjs';
 import { WorkspaceStore } from './runtime/workspaces.ts';
 import { readWorkspaceText } from './runtime/workspace-text.ts';
 import {openWorkspaceMedia,mediaRange} from './runtime/workspace-media.ts';
-import { accessConfig, allowedHost, allowedPost, createAccessPrincipalVerifier,type VerifiedAccessPrincipal } from './access.ts';
+import { accessConfig, allowedHost, allowedPost, createAccessPrincipalVerifier, accessToken, type VerifiedAccessPrincipal } from './access.ts';
 import { readJsonBody } from './body.ts';
 import { PromptReceipts } from './runtime/prompt-receipts.ts';
 import { createHmac, randomBytes } from 'node:crypto';
@@ -66,7 +66,7 @@ let localListener:ReturnType<typeof createServer>|undefined;
 const localOwner=createLocalMcpOwner(trustedLocalConfig.owner,()=>trustedLocal?.status().enabled===true);
 // No credential generation/export. Explicit owner-provisioned profile is separate.
 // Source opt-in composition is shared with isolated acceptance; deployment is separate approval.
-const finalOwner = createFinalOwnerComposition(store,workspacePermissions,{reportRecoveryDir:join(dataDir,'report-recovery'),queueDir:join(dataDir,'queue'),journalDir:join(dataDir,'final-answers')},{enabled:trustedLocalConfig.enabled===true&&trustedLocalConfigured(trustedLocalConfig),accessMode:access?'access':'local',authentication:trustedLocalConfig.credentials?{mode:'shared_secret',key:trustedLocalConfig.credentials.final}:undefined,legacyCredentialKeys:trustedLocalConfig.legacyCredentialKeys? [...trustedLocalConfig.legacyCredentialKeys,...(trustedLocalConfig.credentials?[trustedLocalConfig.credentials.read,trustedLocalConfig.credentials.control]:[])]:undefined,ownerRequest:localOwner.verify});
+const finalOwner = createFinalOwnerComposition(store,workspacePermissions,{reportRecoveryDir:join(dataDir,'report-recovery'),queueDir:join(dataDir,'queue'),journalDir:join(dataDir,'final-answers'),orchestratorHistoryDir:join(dataDir,'orchestrator-history')},{enabled:trustedLocalConfig.enabled===true&&trustedLocalConfigured(trustedLocalConfig),accessMode:access?'access':'local',authentication:trustedLocalConfig.credentials?{mode:'shared_secret',key:trustedLocalConfig.credentials.final}:undefined,legacyCredentialKeys:trustedLocalConfig.legacyCredentialKeys? [...trustedLocalConfig.legacyCredentialKeys,...(trustedLocalConfig.credentials?[trustedLocalConfig.credentials.read,trustedLocalConfig.credentials.control]:[])]:undefined,ownerRequest:localOwner.verify});
 const runtime = finalOwner.runtime;
 const promptReceipts = new PromptReceipts(join(dataDir, 'prompt-receipts'));
 const recycling = new SessionRecycling(join(dataDir,'session-retention.json'),runtime);
@@ -152,10 +152,10 @@ const server = createServer(async (req, res) => {
     if (!allowedHost(req.headers.host, access)) return respond(res, 403, { error: 'invalid host' });
     if (!access && ['cf-connecting-ip','cf-ray','x-forwarded-host','forwarded'].some(name=>req.headers[name])) return respond(res,403,{error:'remote mode not configured'});
     if (verifyAccess) {
-      if(req.rawHeaders.filter((v,i)=>i%2===0&&v.toLowerCase()==='cf-access-jwt-assertion').length!==1)return respond(res,401,{error:'Cloudflare Access authentication required'});
-      const principal=await verifyAccess(req.headers['cf-access-jwt-assertion']);
-      if(!principal)return respond(res,401,{error:'Cloudflare Access authentication required'});
-      accessPrincipals.set(req,principal);
+      // accessToken rejects duplicated/combined assertion headers before verification.
+      const principal = await verifyAccess(accessToken(req));
+      if (!principal) return respond(res, 401, { error: 'Cloudflare Access authentication required' });
+      accessPrincipals.set(req, principal);
     }
     if (req.method === 'POST') {
       if (!allowedPost(req,access)) return respond(res, 403, { error: 'cross-origin request' });

@@ -2,6 +2,7 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { kitRoot } from './source.ts';
+import { resolvePiCli } from '../../../package/launcher.mjs';
 import { loadOverlay, applyOverlay, routingForRole } from './overlay.ts';
 
 const load = (root: string, file: string) => import(pathToFileURL(join(root,file)).href);
@@ -39,8 +40,9 @@ export async function answerKitDecision(root: string, sessionId: string, runId: 
 export async function resumeKitRun(root: string, sessionId: string, workspacePath: string, runId: string, onProgress?: (message:string)=>void): Promise<{completed:boolean;needsInput:boolean;report?:string}> {
   return withContext(root,sessionId,async(api,ctx)=>{
     const [pi,subagent]=await Promise.all([load(root,'adapters/pi/lib/invoke.mjs'),load(root,'adapters/pi/lib/subagent.mjs')]);
-    const health=api.createRunHealth(ctx),invoke=pi.createPiInvoker();
-    const runner=createConsoleRunner(api,ctx,{invoke,runSubagent:subagent.createPiSubagentRunner(),repoRoot:workspacePath,apply:false,health,runId});
+    const piEntry=resolvePiCli();
+    const health=api.createRunHealth(ctx),invoke=pi.createPiInvoker({piEntry});
+    const runner=createConsoleRunner(api,ctx,{invoke,runSubagent:subagent.createPiSubagentRunner({piEntry}),repoRoot:workspacePath,apply:false,health,runId});
     const result=await api.resumeOrchestration(ctx,{runId,repoRoot:workspacePath,runner,invoke,health,onProgress});
     return {completed:result.status==='completed',needsInput:result.status==='needs-user',report:typeof api.formatReport==='function'?api.formatReport(result):undefined};
   });
@@ -68,8 +70,9 @@ export async function startKitRun(root: string, sessionId: string, workspacePath
     await applyModelOverlay(ctx);
     if (ctx.errors.length) throw new Error(ctx.errors.join('\n'));
     const health = api.createRunHealth(ctx);
-    const invoke = pi.createPiInvoker();
-    const runner = createConsoleRunner(api,ctx, { invoke, runSubagent: subagent.createPiSubagentRunner(), repoRoot: workspacePath, apply: false, health });
+    const piEntry = resolvePiCli();
+    const invoke = pi.createPiInvoker({piEntry});
+    const runner = createConsoleRunner(api,ctx, { invoke, runSubagent: subagent.createPiSubagentRunner({piEntry}), repoRoot: workspacePath, apply: false, health });
     const result = await api.startOrchestration(ctx, { request, repoRoot: workspacePath, runner, invoke, health, onProgress });
     onNeedsInput?.(result.status==='needs-user');
     if (result.status!=='needs-user' && onReport && typeof api.formatReport === 'function') {

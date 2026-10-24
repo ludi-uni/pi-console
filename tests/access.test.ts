@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { accessConfig, allowedHost, allowedPost, createAccessVerifier } from '../server/access.ts';
+import { accessConfig, allowedHost, allowedPost, createAccessVerifier, accessToken } from '../server/access.ts';
 
 const env={PI_CONSOLE_PUBLIC_ORIGIN:'https://console.example.com',PI_CONSOLE_ACCESS_TEAM_DOMAIN:'https://my-team.cloudflareaccess.com',PI_CONSOLE_ACCESS_AUD:'a'.repeat(64)};
 const config=accessConfig(env)!;
@@ -19,11 +19,20 @@ test('remote config is explicit and fails closed; local and public Host/Origin s
   assert.equal(allowedPost({headers:{host:'console.example.com',origin:'https://console.example.com','sec-fetch-site':'cross-site'}},config),false);
 });
 
+test('Access token extraction rejects duplicate headers regardless of casing or Node normalization', () => {
+  const headers = {'cf-access-jwt-assertion':'valid-token'};
+  assert.equal(accessToken({headers,rawHeaders:['CF-Access-JWT-Assertion','valid-token']}), 'valid-token');
+  assert.equal(accessToken({headers,rawHeaders:[]}), undefined);
+  assert.equal(accessToken({headers,rawHeaders:['CF-Access-JWT-Assertion','valid-token','cf-access-jwt-assertion','other']}), undefined);
+  assert.equal(accessToken({headers:{'cf-access-jwt-assertion':['one','two']},rawHeaders:['cf-access-jwt-assertion','one']}), undefined);
+});
+
 test('Cloudflare Access JWT requires rotating-key signature, RS256, iss/aud/time and interactive subject',async()=>{
   const {publicKey,privateKey}=await generateKeyPair('RS256');const jwk=await exportJWK(publicKey);jwk.kid='key-1';jwk.alg='RS256';jwk.use='sig';
   const verify=createAccessVerifier(config,createLocalJWKSet({keys:[jwk]}));
   const sign=(claims:Record<string,unknown>)=>new SignJWT({type:'app',sub:'user-1',...claims}).setProtectedHeader({alg:'RS256',kid:'key-1'}).setIssuer(config.issuer).setAudience(config.audience).setIssuedAt().setExpirationTime('1h').sign(privateKey);
   const valid=await sign({});assert.equal(await verify(valid),true);assert.equal(await verify(undefined),false);
+  for (const value of [[], [valid], {}, 123, null]) assert.equal(await verify(value),false);
   assert.equal(await verify(valid.slice(0,-2)+'zz'),false);
   assert.equal(await verify(await new SignJWT({type:'app',sub:'u'}).setProtectedHeader({alg:'RS256',kid:'key-1'}).setIssuer('https://other.cloudflareaccess.com').setAudience(config.audience).setIssuedAt().setExpirationTime('1h').sign(privateKey)),false);
   assert.equal(await verify(await new SignJWT({type:'app',sub:'u'}).setProtectedHeader({alg:'RS256',kid:'key-1'}).setIssuer(config.issuer).setAudience('b'.repeat(64)).setIssuedAt().setExpirationTime('1h').sign(privateKey)),false);

@@ -8,6 +8,17 @@ import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {once} from 'node:events';
 import {startupStatus,setStartup,ensureStartupOnPiSession} from '../package/startup-manager.mjs';
+import {startupFailureMessage} from '../package/startup-error.mjs';
+
+test('startup errors never forward settings, paths or server log tails', () => {
+  const secret='PRIVATE_TEST_MARKER';
+  assert.equal(startupFailureMessage(new Error(`pi-console exited during startup (1): ${secret}`)), 'pi-console startup: pi-console exited during startup (1)');
+  assert.equal(startupFailureMessage(new Error(`pi-console startup timed out after 1000ms: ${secret}`)), 'pi-console startup: pi-console startup timed out after 1000ms');
+  for (const error of [new Error(secret), {message:secret,code:secret}, null]) {
+    assert.equal(startupFailureMessage(error), 'pi-console startup: startup refused');
+  }
+});
+import {resolvePiCli} from '../package/launcher.mjs';
 
 test('first interactive Pi session registers only its own shortcut; Settings off persists and removes it', {skip:process.platform!=='win32'},async()=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-startup-'));const agentDir=join(root,'agent'),startupDir=join(root,'Startup');await mkdir(startupDir);
@@ -47,7 +58,7 @@ test('startup entry exits when the port is occupied and starts a detached manage
   try{const [code]=await once(child,'close');assert.equal(code,0);assert.equal(listener.listening,true)}finally{listener.close();await once(listener,'close');await rm(root0,{recursive:true,force:true})}
   const root=await mkdtemp(join(tmpdir(),'pi-console-startup-server-'));
   const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');const freePort=probe.address().port;probe.close();await once(probe,'close');
-  const piCli=process.env.PI_CONSOLE_PI_COMMAND||join(process.env.APPDATA||'','npm','node_modules','@earendil-works','pi-coding-agent','dist','bundle','cli.js');
+  const piCli=resolvePiCli();
   const env={...process.env,PORT:String(freePort),PI_CONSOLE_DATA_DIR:root,PI_CODING_AGENT_DIR:join(root,'agent'),PI_CONSOLE_PI_COMMAND:piCli,PI_CONSOLE_PUBLIC_ORIGIN:'',PI_CONSOLE_ACCESS_TEAM_DOMAIN:'',PI_CONSOLE_ACCESS_AUD:''};
   try{
     const launcherProc=spawn(process.execPath,['--import','tsx','package/startup.mjs'],{cwd:process.cwd(),env,stdio:'pipe'});

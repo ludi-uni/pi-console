@@ -8,9 +8,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { resolvePiCli } from '../package/launcher.mjs';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const piCli = process.env.PI_CONSOLE_PI_COMMAND || join(process.env.APPDATA || '', 'npm', 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js');
+// Resolved through the shared resolver so the explicit override and managed installs work.
+const piCli = resolvePiCli();
 const exec = promisify(execFile);
 const availablePort = async () => {
   const probe = createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');

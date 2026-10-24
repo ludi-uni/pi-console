@@ -18,13 +18,13 @@ const deny=(code:string):never=>{throw new PermissionFault(code);};
 const tuple=(t:ResultTarget)=>JSON.stringify([t.instance,t.revision,t.workspaceId,t.sessionId,t.generation,t.runId]);
 /** Shared normal-server/fixture composition. No config/key discovery, no OS identity claim.
  * Runtime producer is opt-in only when the same final-only authenticated local configuration is valid. */
-export function createFinalOwnerComposition(workspaces:WorkspaceStore,permissions:WorkspacePermissions,paths:{sessionsRoot?:string;reportRecoveryDir?:string;queueDir?:string;journalDir?:string},config:FinalOwnerConfig={}){
+export function createFinalOwnerComposition(workspaces:WorkspaceStore,permissions:WorkspacePermissions,paths:{sessionsRoot?:string;reportRecoveryDir?:string;queueDir?:string;journalDir?:string;orchestratorHistoryDir?:string},config:FinalOwnerConfig={}){
   const requested=config.enabled===true,accessMode=config.accessMode??'unknown',key=config.authentication?.key;
   const reason=!requested?'final_only_disabled':!(accessMode==='local'||accessMode==='access'&&config.ownerRequest)?'access_owner_blocked':!config.authentication||config.authentication.mode!=='shared_secret'||!validKey(key)?'dedicated_read_authentication_required':!config.legacyCredentialKeys||config.legacyCredentialKeys.length>31||config.legacyCredentialKeys.some(k=>!validKey(k))?'credential_separation_unknown':config.legacyCredentialKeys.includes(key)?'credential_not_dedicated':!paths.journalDir?'journal_unconfigured':null;
   const enabled=reason===null,epoch=randomUUID(),now=config.now??Date.now;
   const knownSecrets=enabled?[key!,...config.legacyCredentialKeys!]:[];
   const safeTarget=(t:ResultTarget)=>!Object.values(t).some(v=>typeof v==='string'&&knownSecrets.some(s=>v.includes(s)));
-  const runtime=new RuntimeManager(workspaces,paths.sessionsRoot,paths.reportRecoveryDir,paths.queueDir,enabled?paths.journalDir:undefined);
+  const runtime=new RuntimeManager(workspaces,paths.sessionsRoot,paths.reportRecoveryDir,paths.queueDir,enabled?paths.journalDir:undefined,paths.orchestratorHistoryDir);
   let disposed=false;const active=()=>enabled&&!disposed;
   const service=new ResultsReadService(permissions,runtime,{enabled,knownSecrets,now,finalCredential:{epoch,active}});
   const adapter=createFinalAnswerMcp(service,enabled?{enabled:true,authentication:{mode:'shared_secret',key:key!},catalogTarget:async()=>{const s=await permissions.snapshot(),g=s.finalPublication;return g&&activePublication(s)&&await eligible(g.target,s)?g.target:null;}}:{});

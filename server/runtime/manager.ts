@@ -37,7 +37,7 @@ export class RuntimeManager {
   private externalAdmissionGuard?:()=>Promise<()=>void>;
   // Ordinary local Console use is separate, not advertised as isolated.
   setExternalAdmissionGuard(guard:()=>Promise<()=>void>){this.externalAdmissionGuard=guard;}
-  constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string, queueDir?:string, private readonly finalAnswerDirectory?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir);this.queueStore=new QueueStore(queueDir)}
+  constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string, queueDir?:string, private readonly finalAnswerDirectory?:string, private readonly orchestratorHistoryDir?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir);this.queueStore=new QueueStore(queueDir)}
   get sessionRoot(){return this.sessionsRoot}
   // Scope admission is not a tool/OS sandbox. These workers run as the owner
   // and could otherwise write permission files or forge local-owner HTTP.
@@ -205,7 +205,7 @@ export class RuntimeManager {
   }
   private async startSources(entry: Active, workspacePath: string) {
     const root = await kitRoot(); if (!root) return;
-    entry.source = new OrchestratorSource(root,entry.session.id,workspacePath,node=>entry.state.publishNode(node,node.kind==='decision'?node.status==='waiting'?'DecisionRequired':'DecisionResolved':'ExecutionNodeUpdated'),process.env.PI_CONSOLE_ORCHESTRATOR_STORE);
+    entry.source = new OrchestratorSource(root,entry.session.id,workspacePath,node=>entry.state.publishNode(node,node.kind==='decision'?node.status==='waiting'?'DecisionRequired':'DecisionResolved':'ExecutionNodeUpdated'),process.env.PI_CONSOLE_ORCHESTRATOR_STORE,this.orchestratorHistoryDir);
     await entry.source.poll(); entry.source.start();
   }
   async open(workspaceId: string, sessionId: string): Promise<Active> {
@@ -355,8 +355,10 @@ export class RuntimeManager {
     const kit=await orchestratorKit();
     if(!kit)throw new Error('ludi-agent-kit is not installed or its API is unavailable');
     const entry=await this.open(workspaceId,sessionId);
-    const bound=await readBoundOrchestrator(kit,sessionId,workspace.path,process.env.PI_CONSOLE_ORCHESTRATOR_STORE);
-    return {workspace,kit,entry,bound,run:bound&&bound.run?.id===bound.snapshot.runId?bound.run:undefined};
+    const bound=await readBoundOrchestrator(kit,sessionId,workspace.path,process.env.PI_CONSOLE_ORCHESTRATOR_STORE,this.orchestratorHistoryDir);
+    // An archived mirror fallback is historical read-only proof — it can display state but
+    // MUST NOT expose a run for answer/retry/report actions (stale snapshot authorization).
+    return {workspace,kit,entry,bound,run:bound&&!bound.archived&&bound.run?.id===bound.snapshot.runId?bound.run:undefined};
   }
   async kitDecisions(workspaceId: string, sessionId: string) {
     const {kit,run,bound}=await this.boundKitDecisionRun(workspaceId,sessionId);
@@ -382,8 +384,8 @@ export class RuntimeManager {
       const decision=decisions.find(d=>d.runId===runId&&d.id===decisionId);
       if(!decision)throw new Error('decision is no longer pending for this run');
       if(Array.isArray(decision.options)&&decision.options.length&&!decision.options.some((option:any)=>option.id===answer.trim()))throw new Error('invalid option: select a listed option ID');
-      const latest=await readBoundOrchestrator(kit,sessionId,workspace.path,process.env.PI_CONSOLE_ORCHESTRATOR_STORE);
-      if(latest?.run?.id!==runId||latest.snapshot.runId!==runId)throw new Error('orchestrator binding changed before the answer was sent');
+      const latest=await readBoundOrchestrator(kit,sessionId,workspace.path,process.env.PI_CONSOLE_ORCHESTRATOR_STORE,this.orchestratorHistoryDir);
+      if(latest?.archived||latest?.run?.id!==runId||latest.snapshot.runId!==runId)throw new Error('orchestrator binding changed before the answer was sent');
       const {remaining}=await answerKitDecision(kit,sessionId,runId,decisionId,answer.trim());
       await entry.source?.poll().catch(()=>{}); // Projection failure must not lose a recorded answer.
       if(remaining)return {runId,remaining,resuming:false};
@@ -401,8 +403,8 @@ export class RuntimeManager {
       if(entry.state.busy||this.kitRuns.get(sessionId)?.running)throw new Error('Pi session or orchestrator is busy');
       if(!['waiting_for_user','failed'].includes(run.status)||!bound?.decisions.some(d=>d.status==='answered'))throw new Error('run has no answered decision awaiting a resumable retry');
       if((await pendingKitDecisions(kit,sessionId,runId)).length)throw new Error('answer remaining questions before retrying');
-      const latest=await readBoundOrchestrator(kit,sessionId,workspace.path,process.env.PI_CONSOLE_ORCHESTRATOR_STORE);
-      if(latest?.run?.id!==runId||latest.snapshot.runId!==runId||!['waiting_for_user','failed'].includes(latest.run.status))throw new Error('orchestrator binding or status changed before retry');
+      const latest=await readBoundOrchestrator(kit,sessionId,workspace.path,process.env.PI_CONSOLE_ORCHESTRATOR_STORE,this.orchestratorHistoryDir);
+      if(latest?.archived||latest?.run?.id!==runId||latest.snapshot.runId!==runId||!['waiting_for_user','failed'].includes(latest.run.status))throw new Error('orchestrator binding or status changed before retry');
       this.launchKitResume(workspaceId,sessionId,workspace,entry,kit,runId,String(run.request??''));
       return {runId,resuming:true};
     }finally{this.answeringKit.delete(sessionId)}

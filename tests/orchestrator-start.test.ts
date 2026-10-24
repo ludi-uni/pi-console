@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { orchestratorKit, startKitRun } from '../server/adapters/orchestrator/start.ts';
+import { orchestratorKit, startKitRun, resumeKitRun } from '../server/adapters/orchestrator/start.ts';
 import { kitRoot } from '../server/adapters/orchestrator/source.ts';
 import { WorkspaceStore } from '../server/runtime/workspaces.ts';
 import { SessionEvents } from '../server/runtime/events.ts';
@@ -199,6 +199,29 @@ export const startOrchestration=async(ctx,args)=>{args.onProgress?.('開始: 計
     assert.deepEqual(JSON.parse(await readFile(join(root,'received'),'utf8')),{binding:{kind:'pi-web',sessionId:'exact-session'},store:root+'/default.db',request:'Implement feature',repo:'C:/project',apply:false});
     assert.equal(await readFile(join(root,'closed'),'utf8'),'yes');
   } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('kit start and resume pass the Console-selected Pi to both invocation paths', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-kit-cli-'));
+  const previous = process.env.PI_CONSOLE_PI_COMMAND;
+  try {
+    for (const dir of ['lib/orchestrator', 'adapters/pi/lib']) await mkdir(join(root, dir), {recursive:true});
+    const cli = join(root, 'selected-cli.js'); await writeFile(cli, '');
+    process.env.PI_CONSOLE_PI_COMMAND = cli;
+    await writeFile(join(root, 'lib/orchestrator/api.mjs'), `export const defaultStorePath=()=>'';
+export const loadOrchestrationContext=()=>({errors:[],session:{close(){}}});
+export const createRunHealth=()=>({});export const createRunRunner=(_ctx,args)=>args;
+const check=args=>{if(args.invoke.piEntry!==${JSON.stringify(cli)}||args.runner.runSubagent.piEntry!==${JSON.stringify(cli)})throw Error('wrong Pi entry');return {runId:'selected-run',status:'completed'}};
+export const startOrchestration=async(_ctx,args)=>check(args);
+export const resumeOrchestration=async(_ctx,args)=>check(args);`);
+    await writeFile(join(root, 'adapters/pi/lib/invoke.mjs'), 'export const createPiInvoker=options=>options;');
+    await writeFile(join(root, 'adapters/pi/lib/subagent.mjs'), 'export const createPiSubagentRunner=options=>options;');
+    assert.equal(await startKitRun(root, 'session', root, 'Request'), 'selected-run');
+    assert.equal((await resumeKitRun(root, 'session', root, 'selected-run')).completed, true);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CONSOLE_PI_COMMAND; else process.env.PI_CONSOLE_PI_COMMAND = previous;
+    await rm(root, {recursive:true,force:true});
+  }
 });
 
 test('waiting kit run exposes a question without saving a premature Pi report',async()=>{

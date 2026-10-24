@@ -7,6 +7,7 @@ import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {consoleDataDir} from '../package/data-directory.mjs';
 import {startManagedServer,stopManagedServer} from '../package/server-manager.mjs';
+import {resolvePiCli} from '../package/launcher.mjs';
 
 test('package startup keeps workspace registrations outside replaceable package cwd', {timeout:20000}, async()=>{
   const root=await mkdtemp(join(tmpdir(),'pi-console-data-dir-'));
@@ -21,7 +22,7 @@ test('package startup keeps workspace registrations outside replaceable package 
   try{
     // startup.mjs now runs the same shared manager: state lands under the agent
     // directory even when invoked from a replaceable package cwd.
-    const started=await startManagedServer({env:{...env,PI_CONSOLE_PI_COMMAND:join(process.env.APPDATA||'','npm','node_modules','@earendil-works','pi-coding-agent','dist','bundle','cli.js')}});
+    const started=await startManagedServer({env:{...env,PI_CONSOLE_PI_COMMAND:resolvePiCli()}});
     assert.equal(started.status,'running');assert.equal(started.changed,true);
     let response;const until=Date.now()+12000;
     while(Date.now()<until){try{response=await fetch(`http://127.0.0.1:${port}/api/workspaces`);break}catch{await new Promise(resolve=>setTimeout(resolve,50))}}

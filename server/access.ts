@@ -28,6 +28,13 @@ export function allowedPost(req: Pick<IncomingMessage,'headers'>, config?: Acces
   try { return new URL(origin).host===req.headers.host; } catch { return false; }
 }
 
+// Node may combine repeated headers. Inspect raw occurrences before trusting a token.
+export function accessToken(req: Pick<IncomingMessage, 'headers' | 'rawHeaders'>): string | undefined {
+  if (req.rawHeaders.filter((name, index) => index % 2 === 0 && name.toLowerCase() === 'cf-access-jwt-assertion').length !== 1) return undefined;
+  const token = req.headers['cf-access-jwt-assertion'];
+  return typeof token === 'string' ? token : undefined;
+}
+
 export type VerifiedAccessPrincipal=Readonly<{subject:string;issuer:string;audience:string;expiresAt:number}>;
 const verifiedPrincipals=new WeakSet<object>();
 export function isVerifiedAccessPrincipal(value:unknown):value is VerifiedAccessPrincipal {return !!value&&typeof value==='object'&&verifiedPrincipals.has(value);}
@@ -43,4 +50,4 @@ export function createAccessPrincipalVerifier(config: AccessConfig, keys: JWTVer
     } catch { return undefined; }
   };
 }
-export function createAccessVerifier(config:AccessConfig,keys?:JWTVerifyGetKey){const verify=createAccessPrincipalVerifier(config,keys);return async(token:string|undefined):Promise<boolean>=>!!await verify(token);}
+export function createAccessVerifier(config:AccessConfig,keys?:JWTVerifyGetKey){const verify=createAccessPrincipalVerifier(config,keys);return async(token:unknown):Promise<boolean>=>!!await verify(token);}
