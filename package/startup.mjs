@@ -3,10 +3,10 @@
 // lock and log as /pi-console and the CLI — and a managed server already running from an
 // earlier session is reused instead of duplicated.
 import { startManagedServer } from './server-manager.mjs';
+import { startupFailureMessage } from './startup-error.mjs';
 try {
   await startManagedServer();
 } catch (error) {
-  // Startup runs without a console; record the failure in the shared log tail location.
-  console.error(`pi-console startup: ${error.message}`);
+  console.error(startupFailureMessage(error));
   process.exitCode = 1;
 }

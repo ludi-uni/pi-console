@@ -28,9 +28,16 @@ export function allowedPost(req: Pick<IncomingMessage,'headers'>, config?: Acces
   try { return new URL(origin).host===req.headers.host; } catch { return false; }
 }
 
+// Node may combine repeated headers. Inspect raw occurrences before trusting a token.
+export function accessToken(req: Pick<IncomingMessage, 'headers' | 'rawHeaders'>): string | undefined {
+  if (req.rawHeaders.filter((name, index) => index % 2 === 0 && name.toLowerCase() === 'cf-access-jwt-assertion').length !== 1) return undefined;
+  const token = req.headers['cf-access-jwt-assertion'];
+  return typeof token === 'string' ? token : undefined;
+}
+
 export function createAccessVerifier(config: AccessConfig, keys: JWTVerifyGetKey = createRemoteJWKSet(new URL(`${config.issuer}/cdn-cgi/access/certs`), {timeoutDuration:3000,cooldownDuration:30000,cacheMaxAge:600000})) {
-  return async (token: string | undefined): Promise<boolean> => {
-    if (!token || token.length>8192) return false;
+  return async (token: unknown): Promise<boolean> => {
+    if (typeof token !== 'string' || !token || token.length>8192) return false;
     try {
       const {payload}=await jwtVerify(token,keys,{issuer:config.issuer,audience:config.audience,algorithms:['RS256'],requiredClaims:['iat','exp'],clockTolerance:'5s'});
       // Browser UI is interactive only. Cloudflare service tokens have an empty sub.

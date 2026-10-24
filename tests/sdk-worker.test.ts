@@ -8,6 +8,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
 import { resolvePiSdk } from '../package/pi-sdk-resolver.mjs';
 import { SessionEvents } from '../server/runtime/events.ts';
+import { piWorkerEnvironment } from '../server/adapters/pi/worker-environment.ts';
+
+test('worker environment strips Console management values without changing provider settings or the parent', () => {
+  const parent = {PI_CONSOLE_MANAGEMENT_TOKEN:'private',pi_console_private:'private',PI_CONSOLE_PI_COMMAND:'cli',PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT:'stale',ANTHROPIC_API_KEY:'provider',PATH:'path'};
+  const before = {...parent};
+  assert.deepEqual(piWorkerEnvironment(parent,'selected'), {ANTHROPIC_API_KEY:'provider',PATH:'path',PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT:'selected'});
+  assert.deepEqual(piWorkerEnvironment(parent), {ANTHROPIC_API_KEY:'provider',PATH:'path'});
+  assert.deepEqual(parent,before);
+});
 
 async function fakeWorker() {
   const root = await mkdtemp(join(tmpdir(), 'console-sdk-fake-'));
@@ -19,16 +28,17 @@ async function fakeWorker() {
   return { worker, async cleanup() { await worker.close(); if (previous === undefined) delete process.env.PI_CONSOLE_WORKER_COMMAND; else process.env.PI_CONSOLE_WORKER_COMMAND = previous; await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
-test('SDK resolver accepts only verified versions and gives actionable guidance for 0.99.0', async () => {
+test('SDK resolver accepts the bounded stable range and rejects bounds, prereleases and malformed versions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'console-sdk-resolver-'));
   try {
     await mkdir(join(root, 'dist')); const cli = join(root, 'dist', 'cli.js');
     await writeFile(cli, ''); await writeFile(join(root, 'sdk.mjs'), 'export {};');
-    for (const version of ['0.99.2', '1.0.0', '1.0.2', '1.1.0', '0.99.0', '1.0.3', '2.0.0']) {
+    const accepted = ['0.99.2', '0.99.3', '0.100.0', '1.0.0', '1.0.1', '1.0.2', '1.0.3', '1.0.4', '1.1.0', '1.2.0', '1.3.0', '1.4.0'];
+    const rejected = ['0.99.0', '0.99.1', '1.4.1', '1.5.0', '2.0.0', '1.4.0-rc.1', '1.4.0+build', 'v1.4.0', 'garbage', '01.4.0', '1.4', '', '1.0.9007199254740993'];
+    for (const version of [...accepted, ...rejected]) {
       await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version, exports: { '.': { import: './sdk.mjs' } } }));
-      if (version === '0.99.0') assert.throws(() => resolvePiSdk(cli), /Unsupported Pi SDK 0\.99\.0.*Update the selected Pi installation \(PI_CONSOLE_PI_COMMAND\)/);
-      else if (version === '1.0.3' || version === '2.0.0') assert.throws(() => resolvePiSdk(cli), new RegExp(`Unsupported Pi SDK ${version.replaceAll('.', '\\.')}.*Update the selected Pi installation`));
-      else assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version, packageRoot: root });
+      if (accepted.includes(version)) assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version, packageRoot: root });
+      else assert.throws(() => resolvePiSdk(cli), /Unsupported Pi SDK .*Update the selected Pi installation \(PI_CONSOLE_PI_COMMAND\)/, version);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -119,7 +129,9 @@ test('preflight rejects before acknowledgement and accepted prompt does not bloc
 
 test('real isolated SDK initializes, preserves RPC extension UI/log isolation, directly reads history and shuts down without a model call', { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'console-sdk-smoke-'));
-  const keys = ['PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PI_CONSOLE_WORKER_COMMAND', 'PI_OFFLINE'];
+  // Resolve the installed code before isolating the SDK's user-data directory.
+  const cli = piExecutable();
+  const keys = ['PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PI_CONSOLE_WORKER_COMMAND', 'PI_OFFLINE', 'PI_CONSOLE_PI_COMMAND'];
   const old = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   let worker: PiProcess | undefined;
   try {
@@ -133,6 +145,7 @@ test('real isolated SDK initializes, preserves RPC extension UI/log isolation, d
     const projectExtensions = join(root, '.pi', 'extensions'), marker = join(root, 'project-loaded');
     await mkdir(projectExtensions, { recursive: true });
     await writeFile(join(projectExtensions, 'project.ts'), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');export default pi=>{pi.registerCommand('sdk-project',{handler:async(_args,ctx)=>{if(!ctx.isProjectTrusted())throw Error('not trusted');}});};`);
+    process.env.PI_CONSOLE_PI_COMMAND = cli;
     process.env.PI_CODING_AGENT_DIR = agent; process.env.PI_CODING_AGENT_SESSION_DIR = join(root, 'sessions'); process.env.PI_OFFLINE = '1'; process.env.PI_CONSOLE_WORKER_COMMAND = '';
     worker = new PiProcess(root, undefined, join(root, 'sessions'));
     const events: any[] = []; worker.onRecord = record => events.push(record);

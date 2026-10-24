@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { existsSync, readFileSync, lstatSync } from 'node:fs';
+import { delimiter, isAbsolute, join, relative, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { consoleDataDir } from './data-directory.mjs';
 import { loadConsoleEnvironment } from './environment.mjs';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,41 @@ import { fileURLToPath } from 'node:url';
 const serverEntry = fileURLToPath(new URL('../server/index.ts', import.meta.url));
 const piCliSuffix = /[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
 const piCliPath = root => join(root, '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js');
+const piPackageName = '@earendil-works/pi-coding-agent';
+const managedVersionPattern = /^[0-9A-Za-z._+-]+$/;
+
+/** Read-only fallback for the pi.dev managed install layout (<agent>/install).
+ * Mirrors the shipped bin/pi-launcher.js selector semantics: current-version names the
+ * release, the release's package.json must be the Pi CLI package and its `pi` bin must
+ * resolve to a file inside that package. Any anomaly is treated as 'not managed' so the
+ * caller reports discovery failure — discovery never writes or reinstalls. */
+function managedPiCli(env) {
+  const install = join(env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'install');
+  let version;
+  try {
+    const selector = join(install, 'current-version');
+    const info = lstatSync(selector);
+    if (!info.isFile() || info.size > 128) return undefined;
+    version = readFileSync(selector, 'utf8').trim();
+  } catch { return undefined; }
+  if (!version || version === '.' || version === '..' || !managedVersionPattern.test(version)) return undefined;
+  const packageDir = join(install, 'releases', version, 'node_modules', ...piPackageName.split('/'));
+  let manifest;
+  try {
+    const file = join(packageDir, 'package.json');
+    const info = lstatSync(file);
+    if (!info.isFile() || info.size > 65536) return undefined;
+    manifest = JSON.parse(readFileSync(file, 'utf8'));
+  } catch { return undefined; }
+  if (manifest?.name !== piPackageName || typeof manifest.version !== 'string' || manifest.version !== version) return undefined;
+  const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.pi;
+  if (typeof bin !== 'string' || !bin) return undefined;
+  const cli = resolve(packageDir, bin);
+  const within = relative(packageDir, cli);
+  if (!within || within.startsWith('..') || isAbsolute(within)) return undefined;
+  try { return lstatSync(cli).isFile() ? cli : undefined; }
+  catch { return undefined; }
+}
 
 export function hostPiCli(argv = process.argv) {
   const entry = argv[1];
@@ -39,6 +75,8 @@ export function resolvePiCli(env = process.env, argv = process.argv) {
   ].filter(Boolean);
   const file = roots.map(piCliPath).find(existsSync);
   if (file) return file;
+  const managed = managedPiCli(env);
+  if (managed) return managed;
   throw new Error('Pi CLI not found; set PI_CONSOLE_PI_COMMAND to the absolute cli.js path');
 }
 

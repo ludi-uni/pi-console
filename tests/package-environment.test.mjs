@@ -9,7 +9,7 @@ import { request } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { loadConsoleEnvironment } from '../package/environment.mjs';
-import { startConsole } from '../package/launcher.mjs';
+import { startConsole, resolvePiCli } from '../package/launcher.mjs';
 import { managedServerStatus, stopManagedServer } from '../package/server-manager.mjs';
 
 const availablePort = async () => {
@@ -26,7 +26,8 @@ const isolatedEnv = root => {
   return env;
 };
 // Node's double-quoted .env syntax interprets \\n; use forward slashes for Windows paths.
-const piCli=join(process.env.APPDATA || '', 'npm','node_modules','@earendil-works','pi-coding-agent','dist','bundle','cli.js').replaceAll('\\','/');
+// Resolve the real Pi CLI through the shared resolver before tests replace env dirs with temp dirs.
+const piCli=resolvePiCli().replaceAll('\\','/');
 const remoteFile = port => `PORT=${port}\nPI_CONSOLE_PUBLIC_ORIGIN="https://console.example.test"\nPI_CONSOLE_ACCESS_TEAM_DOMAIN=https://test-team.cloudflareaccess.com\nPI_CONSOLE_ACCESS_AUD=${'a'.repeat(64)}\nPI_CONSOLE_PI_COMMAND="${piCli}"\n`;
 
 test('stable Console .env supports quoted values, precedence, missing files and read errors without changing host env',async()=>{

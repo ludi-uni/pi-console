@@ -12,7 +12,7 @@ import { startupStatus, setStartup } from '../package/startup-manager.mjs';
 import { WorkspaceStore } from './runtime/workspaces.ts';
 import { readWorkspaceText } from './runtime/workspace-text.ts';
 import {openWorkspaceMedia,mediaRange} from './runtime/workspace-media.ts';
-import { accessConfig, allowedHost, allowedPost, createAccessVerifier } from './access.ts';
+import { accessConfig, allowedHost, allowedPost, createAccessVerifier, accessToken } from './access.ts';
 import { readJsonBody } from './body.ts';
 import { PromptReceipts } from './runtime/prompt-receipts.ts';
 import { createHmac, randomBytes } from 'node:crypto';
@@ -21,7 +21,7 @@ const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-cons
 const assetsDir = fileURLToPath(new URL('../dist/', import.meta.url));
 const store = new WorkspaceStore(join(dataDir, 'workspaces.json'));
 await store.load();
-const runtime = new RuntimeManager(store, undefined, join(dataDir,'report-recovery'), join(dataDir,'queue'));
+const runtime = new RuntimeManager(store, undefined, join(dataDir,'report-recovery'), join(dataDir,'queue'), join(dataDir,'orchestrator-history'));
 const promptReceipts = new PromptReceipts(join(dataDir, 'prompt-receipts'));
 const recycling = new SessionRecycling(join(dataDir,'session-retention.json'),runtime);
 await recycling.load();
@@ -75,7 +75,7 @@ const server = createServer(async (req, res) => {
     }
     if (!allowedHost(req.headers.host, access)) return respond(res, 403, { error: 'invalid host' });
     if (!access && ['cf-connecting-ip','cf-ray','x-forwarded-host','forwarded'].some(name=>req.headers[name])) return respond(res,403,{error:'remote mode not configured'});
-    if (verifyAccess && !await verifyAccess(req.headers['cf-access-jwt-assertion'] as string | undefined)) return respond(res, 401, { error: 'Cloudflare Access authentication required' });
+    if (verifyAccess && !await verifyAccess(accessToken(req))) return respond(res, 401, { error: 'Cloudflare Access authentication required' });
     if (req.method === 'POST') {
       if (!allowedPost(req,access)) return respond(res, 403, { error: 'cross-origin request' });
       if (!req.headers['content-type']?.startsWith('application/json')) return respond(res, 415, { error: 'JSON required' });

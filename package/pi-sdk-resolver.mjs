@@ -11,9 +11,15 @@ export function resolvePiSdk(cli) {
     if (existsSync(file)) {
       const pkg = JSON.parse(readFileSync(file, 'utf8'));
       if (pkg.name === '@earendil-works/pi-coding-agent') {
-        // preflightResult and awaited agent subscriptions are version-sensitive.
-        // Expand this explicit compatibility list only with no-provider contract tests.
-        if (!['0.99.2', '1.0.0', '1.0.2', '1.1.0'].includes(pkg.version)) throw new Error(`Unsupported Pi SDK ${pkg.version}; Console SDK worker currently supports 0.99.2 / 1.0.0 / 1.0.2 / 1.1.0. Update the selected Pi installation (PI_CONSOLE_PI_COMMAND) to a supported version.`);
+        // preflightResult and awaited agent subscriptions are version-sensitive. The
+        // contract is verified against the latest release (1.4.0) and bounded to the
+        // strict stable-semver range >=0.99.2 <=1.4.0; intermediate releases inside the
+        // range are expected but not individually executed, prereleases and newer
+        // majors/minors are refused. Widen the bound only with a no-provider contract test.
+        const v = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(String(pkg.version ?? ''))?.slice(1).map(Number);
+        const supported = !!v && v.every(Number.isSafeInteger) &&
+          (v[0] === 0 && (v[1] > 99 || v[1] === 99 && v[2] >= 2) || v[0] === 1 && (v[1] < 4 || v[1] === 4 && v[2] === 0));
+        if (!supported) throw new Error(`Unsupported Pi SDK ${pkg.version}; Console SDK worker currently supports stable 0.99.2–1.4.0. Update the selected Pi installation (PI_CONSOLE_PI_COMMAND) to a supported version.`);
         const entry = pkg.exports?.['.']?.import;
         if (typeof entry !== 'string' || !entry.startsWith('./')) throw new Error('Pi SDK public import export unavailable');
         const path = resolve(dir, entry);

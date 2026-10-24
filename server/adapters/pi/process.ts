@@ -1,12 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { JsonlParser } from './parser.ts';
 import { FrameDecoder, TransportWriter } from '../../../package/worker-transport.mjs';
 import { resolvePiSdk } from '../../../package/pi-sdk-resolver.mjs';
+import { resolvePiCli } from '../../../package/launcher.mjs';
+import { piWorkerEnvironment } from './worker-environment.ts';
 import type { ProcessState } from '../../../shared/types.ts';
 
 type RecordValue = Record<string, any>;
@@ -18,13 +20,10 @@ export function transition(state: ProcessState, next: ProcessState): ProcessStat
   if (!allowed[state].includes(next)) throw new Error(`invalid process transition ${state} -> ${next}`);
   return next;
 }
+// Thin wrapper over the shared launcher resolver so the SDK worker discovers the
+// same Pi CLI as every other entry point, including managed ~/.pi/agent installs.
 export function piExecutable(): string {
-  const override = process.env.PI_CONSOLE_PI_COMMAND;
-  if (override) { if (!isAbsolute(override) || !existsSync(override)) throw new Error('PI_CONSOLE_PI_COMMAND must be an absolute existing CLI script'); return override; }
-  const roots = [process.env.APPDATA && join(process.env.APPDATA, 'npm', 'node_modules'), join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.npm-global', 'lib', 'node_modules'), '/usr/local/lib/node_modules'];
-  const file = roots.filter(Boolean).map(root => join(root!, '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js')).find(existsSync);
-  if (!file) throw new Error('Pi CLI not found; set PI_CONSOLE_PI_COMMAND to its cli.js path');
-  return file;
+  return resolvePiCli(process.env);
 }
 export function consoleExtension(): string {
   const file = fileURLToPath(new URL('../../../extensions/pi-console-session.mjs', import.meta.url));
@@ -72,7 +71,7 @@ export class PiProcess {
       // visible to extension-relative module resolution. Bind child discovery to
       // the same verified Pi installation as this worker, before extensions load.
       // Do not mutate the server environment or inherit a stale host override.
-      const env = sdk ? { ...process.env, PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT: sdk.packageRoot } : process.env;
+      const env = piWorkerEnvironment(process.env, sdk?.packageRoot);
       const child = spawn(process.execPath, args, { cwd: this.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
       child.stdin.on('error', error => { if (!this.intendedStop) { this.fail(error); child.kill(); } });
