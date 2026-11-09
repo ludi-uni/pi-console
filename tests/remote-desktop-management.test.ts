@@ -1,0 +1,40 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createRemoteManagement} from '../server/remote-desktop/http.ts';
+test('HTTP credentials never reach the secret store; cross-origin edits are refused',async()=>{
+ let writes=0;const handler=createRemoteManagement({origin:'http://127.0.0.1:31717',store:{view:()=>({}),configure:()=>{writes++}} as any,broker:{} as any,channel:{} as any});
+ const run=async(url:string,origin:string)=>{let status=0;const req={url,method:'POST',headers:{host:'127.0.0.1:31717',origin,'content-type':'application/json','x-pi-remote-admin':'1'},socket:{remoteAddress:'127.0.0.1'}} as any;const res={writeHead:(s:number)=>status=s,end:()=>{}} as any;await handler(req,res);return status};
+ assert.equal(await run('/api/remote-connections/token','http://127.0.0.1:31717'),404);
+ assert.equal(await run('/api/remote-connections/configure','http://evil.test'),403);assert.equal(writes,0);
+});
+test('operator approval route is admin-guarded and resolves only a live pending id',async()=>{
+ const seen:{approved:boolean}[]=[];const broker={pendingApproval:()=>({approvalId:'abc123',operation:'caivi_click',requestedAt:'2026-01-01T00:00:00.000Z',expiresAt:'2026-01-01T00:01:00.000Z',revision:3}),resolveApproval:(id:string,approved:boolean)=>{seen.push({approved});return id==='abc123'}};
+ const handler=createRemoteManagement({origin:'http://127.0.0.1:31717',store:{view:async()=>({revision:3})},broker,channel:{}});
+ const respond=(body:unknown)=>{const req={url:'/api/remote-connections/approval',method:'POST',headers:{host:'127.0.0.1:31717',origin:'http://127.0.0.1:31717','content-type':'application/json','x-pi-remote-admin':'1'},socket:{remoteAddress:'127.0.0.1'},[Symbol.asyncIterator]:async function*(){yield Buffer.from(JSON.stringify(body))}} as any;let status=0,payload:any;const res={writeHead:(s:number)=>status=s,end:(t:string)=>payload=JSON.parse(t)} as any;return handler(req,res).then(()=>({status,payload}))};
+ const denied=await respond({connection:'caivi-vm',approvalId:'forged',approved:true});assert.equal(denied.payload.resolved,false);assert.equal(seen.length,1);
+ const approved=await respond({connection:'caivi-vm',approvalId:'abc123',approved:true});assert.equal(approved.payload.resolved,true);assert.equal(seen.at(-1)!.approved,true);
+ for(const bad of [{connection:'caivi-vm',approved:true},{connection:'other',approvalId:'abc123',approved:true},{connection:'caivi-vm',approvalId:'abc123',approved:true,token:'x'}])assert.equal((await respond(bad)).status,409);
+ const get={url:'/api/remote-connections',method:'GET',headers:{host:'127.0.0.1:31717'},socket:{remoteAddress:'127.0.0.1'}} as any;let status=0,payload:any;await handler(get,{writeHead:(s:number)=>status=s,end:(t:string)=>payload=JSON.parse(t)} as any);assert.equal(status,200);assert.equal(payload.pendingApproval.approvalId,'abc123');assert.deepEqual(payload.artifacts,[]);assert.equal(payload.approvedTarget,null);assert.deepEqual(payload.config,{perRequestApproval:true});
+});
+test('grants route validates shape and delegates; target and artifacts routes guard actions',async()=>{
+ const grantCalls:unknown[]=[];const store={view:async()=>({revision:1}),setGrants:async(c:string,g:unknown)=>{grantCalls.push(g);return{};}};
+ const target={status:async()=>({bound:false}),probe:async()=>({bound:true}),clear:async()=>{}};const artifacts={list:async()=>[{name:'a.txt',sha256:'a'.repeat(64),size:3}],staged:async()=>[],register:async(n:string)=>{if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(n))throw Error('artifact_denied');return n},unregister:async(n:string)=>n};
+ const handler=createRemoteManagement({origin:'http://127.0.0.1:31717',store,broker:{pendingApproval:()=>undefined},channel:{},target,artifacts});
+ const post=(route:string,body:unknown)=>{const req={url:'/api/remote-connections'+route,method:'POST',headers:{host:'127.0.0.1:31717',origin:'http://127.0.0.1:31717','content-type':'application/json','x-pi-remote-admin':'1'},socket:{remoteAddress:'127.0.0.1'},[Symbol.asyncIterator]:async function*(){yield Buffer.from(JSON.stringify(body))}} as any;let status=0,payload:any;const res={writeHead:(s:number)=>status=s,end:(t:string)=>{try{payload=JSON.parse(t)}catch{payload=t}}} as any;return handler(req,res).then(()=>({status,payload}))};
+ const ok=await post('/grants',{connection:'caivi-vm',grants:{read:true}});assert.equal(ok.status,200);assert.deepEqual(grantCalls,[{read:true}]);
+ for(const bad of [{connection:'caivi-vm',grants:{bogus:true}},{connection:'caivi-vm',grants:{read:'yes'}},{connection:'other',grants:{read:true}},{connection:'caivi-vm',grants:{read:true},extra:1}])assert.equal((await post('/grants',bad)).status,409);
+ assert.equal((await post('/target',{connection:'caivi-vm',action:'probe'})).status,200);
+ assert.equal((await post('/target',{connection:'caivi-vm',action:'clear',confirmed:true})).status,200);
+ for(const bad of [{connection:'caivi-vm',action:'clear'},{connection:'caivi-vm',action:'probe',pid:1},{connection:'caivi-vm',action:'hax'}])assert.equal((await post('/target',bad)).status,409);
+ assert.equal((await post('/artifacts',{connection:'caivi-vm',action:'register',name:'a.txt'})).status,200);
+ assert.equal((await post('/artifacts',{connection:'caivi-vm',action:'unregister',name:'a.txt',confirmed:true})).status,200);
+ for(const bad of [{connection:'caivi-vm',action:'unregister',name:'a.txt'},{connection:'caivi-vm',action:'register',name:'/etc/passwd'},{connection:'caivi-vm',action:'register',name:'a.txt',path:'C:/secret'},{connection:'caivi-vm',action:'recover'},{connection:'caivi-vm',action:'unstage',name:'a.txt'}])assert.equal((await post('/artifacts',bad)).status,409);
+ // Upload route: strict shape, own body bound, writes only through stageUpload.
+ const uploaded:{name:string,data:string}[]=[];const uploadArtifacts={...artifacts,staged:async()=>[],stageUpload:async(name:string,data:string)=>{if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(name))throw Error('artifact_denied');uploaded.push({name,data});return{name,size:3,sha256:'c'.repeat(64)};}};
+ const up=createRemoteManagement({origin:'http://127.0.0.1:31717',store,broker:{pendingApproval:()=>undefined},channel:{},artifacts:uploadArtifacts});
+ const upPost=(route:string,body:unknown)=>{const req={url:'/api/remote-connections'+route,method:'POST',headers:{host:'127.0.0.1:31717',origin:'http://127.0.0.1:31717','content-type':'application/json','x-pi-remote-admin':'1'},socket:{remoteAddress:'127.0.0.1'},[Symbol.asyncIterator]:async function*(){yield Buffer.from(JSON.stringify(body))}} as any;let status=0,payload:any;const res={writeHead:(s:number)=>status=s,end:(t:string)=>{try{payload=JSON.parse(t)}catch{payload=t};return t}} as any;return up(req,res).then(()=>({status,payload}))};
+ const uploadOk=await upPost('/artifacts-upload',{connection:'caivi-vm',name:'a.txt',dataBase64:'QUJD'});assert.equal(uploadOk.status,200);assert.deepEqual(uploadOk.payload.staged,{name:'a.txt',size:3,sha256:'c'.repeat(64)});assert.deepEqual(uploaded,[{name:'a.txt',data:'QUJD'}]);
+ for(const bad of [{connection:'caivi-vm',name:'a.txt'},{connection:'other',name:'a.txt',dataBase64:'QUJD'},{connection:'caivi-vm',name:'a.txt',dataBase64:'QUJD',path:'C:/secret'},{connection:'caivi-vm',name:'../evil',dataBase64:'QUJD'}])assert.equal((await upPost('/artifacts-upload',bad)).status,409);
+ assert.equal((await upPost('/artifacts-upload',{connection:'caivi-vm',name:'a.txt',dataBase64:'QUJD'})).status,200);assert.equal(uploaded.length,2);
+});
+test('Access-mode management uses the existing verified owner, never a forged header',async()=>{let reads=0;const handler=createRemoteManagement({origin:'https://console.example.test',authorize:()=>false,store:{view:()=>{reads++;return{}}},broker:{},channel:{}});let status=0;await handler({url:'/api/remote-connections',method:'GET',headers:{host:'console.example.test','x-pi-remote-admin':'1','cf-access-jwt-assertion':'forged'},socket:{remoteAddress:'127.0.0.1'}} as any,{writeHead:(s:number)=>status=s,end:()=>{}} as any);assert.equal(status,403);assert.equal(reads,0);});

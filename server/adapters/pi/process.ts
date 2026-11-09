@@ -47,9 +47,12 @@ export class PiProcess {
   private sessionId?: string;
   private handshakeReceived = false;
   private expectedSdkVersion?: string;
+  private remoteRunId?:string;
+  private remoteRequests=new Set<string>();
+  private remoteCancelled=new Set<string>();
   onRecord: (record: RecordValue) => void = () => {};
   onState: (state: ProcessState, reason?: string) => void = () => {};
-  constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string, private readonly finalAnswerEvidence = false) {}
+  constructor(readonly cwd: string, readonly sessionPath?: string, readonly sessionDir?: string, private readonly finalAnswerEvidence = false,private readonly remoteBroker?:(request:unknown,assertAuthority?:()=>void)=>Promise<unknown>) {}
   private set(next: ProcessState, reason?: string) { this.state = transition(this.state, next); this.onState(this.state, reason); }
   async start(): Promise<void> {
     if (this.state !== 'stopped') throw new Error('worker already started');
@@ -67,7 +70,7 @@ export class PiProcess {
       if(this.finalAnswerEvidence && sdk && sdk.version !== '1.0.2') throw new Error('final_answer_sdk_unverified');
       this.expectedSdkVersion = sdk?.version;
       const entry = fixture ?? fileURLToPath(new URL('../../../package/sdk-worker.mjs', import.meta.url));
-      const args = [entry, ...(this.finalAnswerEvidence ? ['--final-answer-evidence'] : []), '--generation', generation, '--extension', consoleExtension(), ...(sdk ? ['--sdk-entry', sdk.entry, '--sdk-version', sdk.version] : []), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
+      const args = [entry, ...(this.remoteBroker?['--remote-desktop-package',fileURLToPath(new URL('../../../packages/pi-remote-desktop/index.mjs',import.meta.url))]:[]), ...(this.finalAnswerEvidence ? ['--final-answer-evidence'] : []), '--generation', generation, '--extension', consoleExtension(), ...(sdk ? ['--sdk-entry', sdk.entry, '--sdk-version', sdk.version] : []), ...(this.sessionPath ? ['--session', this.sessionPath] : []), ...(this.sessionDir ? ['--session-dir', this.sessionDir] : [])];
       // SDK hosts have no Pi CLI in argv, and global npm packages are not
       // visible to extension-relative module resolution. Bind child discovery to
       // the same verified Pi installation as this worker, before extensions load.
@@ -111,7 +114,17 @@ export class PiProcess {
     for (const [id, task] of this.inspections) { clearTimeout(task.timer); task.reject(error); this.inspections.delete(id); }
   }
   private handle(record: RecordValue) {
+    if(record.type==='console_remote_desktop_cancel'){if(this.remoteRequests.has(record.requestId))this.remoteCancelled.add(record.requestId);return;}
+    if(record.type==='console_remote_desktop_request'){
+      const valid=this.remoteBroker&&this.state==='running'&&record.runId===this.remoteRunId&&typeof this.remoteRunId==='string'&&/^[a-f0-9-]{36}$/.test(record.requestId)&&!this.remoteRequests.has(record.requestId)&&this.remoteRequests.size<4096;
+      if(valid)this.remoteRequests.add(record.requestId);
+      const assertAuthority=()=>{if(this.state!=='running'||this.remoteRunId!==record.runId||this.remoteCancelled.has(record.requestId))throw Error('remote_run_authority_lost');};
+      void Promise.resolve(valid?this.remoteBroker!(record.request,assertAuthority):{ok:false,error:'remote_run_authority_required',outcome:'KNOWN'}).catch(()=>({ok:false,error:'remote_broker_unavailable',outcome:'UNKNOWN'})).then(result=>this.call('remote_desktop_result',{requestId:record.requestId,result}).catch(()=>{})).finally(()=>this.remoteCancelled.delete(record.requestId));
+      return;
+    }
+    if(record.type==='agent_settled')this.remoteRunId=undefined;
     if (record.type === 'console_ready') {
+      if(this.remoteBroker&&record.remoteDesktop!==true)throw Error('remote_package_tool_registration_failed');
       if (!this.readyResolve || this.handshakeReceived || this.expectedSdkVersion && (record.sdkVersion !== this.expectedSdkVersion || typeof record.sessionId !== 'string' || !record.sessionId) || record.protocolVersion !== 1 || !Array.isArray(record.capabilities) || !['chunked-records', 'direct-history', 'preflight-ack'].every(c => record.capabilities.includes(c))) throw new Error('Invalid SDK worker ready handshake');
       this.handshakeReceived = true; this.sessionId = record.sessionId; this.readyResolve(); return;
     }
@@ -145,6 +158,8 @@ export class PiProcess {
   async call(type: string, fields: RecordValue = {}, timeoutMs = 30000, onStart?: () => void): Promise<RecordValue> {
     const id = `console-${++this.seq}`;
     if (this.state !== 'running') throw new Error('Pi not running');
+    if(type==='prompt'&&typeof fields.consoleRunId==='string')this.remoteRunId=fields.consoleRunId;
+    if(type==='abort')this.remoteRunId=undefined;
     const result = new Promise<RecordValue>((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`SDK ${type} timed out`)); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, onStart });
@@ -181,6 +196,9 @@ export class PiProcess {
       const task = this.inspections.get(requestId); if (task) { this.inspections.delete(requestId); clearTimeout(task.timer); task.reject(new Error('Subagent inspection cancelled')); }
     }
   }
+  // True while any console RPC or subagent inspection is still in flight. Idle
+  // eviction must not close a worker that has an unanswered request outstanding.
+  hasPendingOperations(): boolean { return this.pending.size > 0 || this.inspections.size > 0; }
   async close(): Promise<void> {
     if (!this.child || this.state === 'stopped') return;
     this.intendedStop = true;

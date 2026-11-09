@@ -1,0 +1,53 @@
+/* Terminal-free speech onboarding card — Settings Voice tab.
+   Palette mirrors the approved dark/purple tokens already used by the app
+   shell; only Baseline-widely-available features (details/summary, progress,
+   flex/grid) are used. */
+.speech-onb{border:1px solid #ffffff15;border-radius:10px;background:#171722;margin:12px 0}
+.speech-onb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid #ffffff15;font-size:.82rem;color:#eeeafa;font-weight:600}
+.speech-onb-status{display:flex;align-items:center;gap:7px;color:#aaa2ba;font-size:.76rem;font-weight:400}
+.speech-onb-status::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.speech-onb-status.good{color:#79d7b4}
+.speech-onb-status.warn{color:#f2c887}
+.speech-onb-body{padding:18px 20px}
+.speech-onb-body h4{font-size:1.02rem;margin:0 0 6px;color:#eeeafa}
+.speech-onb-body p{margin:0 0 12px;color:#d5cbe4;font-size:.84rem;line-height:1.55}
+.speech-onb-body .muted{color:#aaa2ba}
+.speech-onb-body .small{font-size:.76rem}
+.speech-onb-model{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;background:#201e2e;border-radius:8px;margin:12px 0;font-size:.86rem}
+.speech-onb-model b{display:block}
+.speech-onb-model small{display:block;color:#aaa2ba;font-size:.74rem}
+.speech-onb-pill{font-size:.72rem;padding:3px 8px;background:#ab8cff18;color:#c6b1ff;border-radius:4px;white-space:nowrap}
+.speech-onb-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:14px}
+.speech-onb-actions .primary{background:#ab8cff;color:#171023;font-weight:650;border-color:transparent;min-height:44px;padding:8px 16px}
+.speech-onb-actions .quiet{background:transparent;min-height:44px}
+.speech-onb-actions .hint{font-size:.76rem;color:#aaa2ba}
+.speech-onb-facts{margin:14px 0}
+.speech-onb-facts .fact{display:grid;grid-template-columns:104px minmax(0,1fr);gap:12px;border-bottom:1px solid #ffffff12;padding:8px 0;font-size:.84rem}
+.speech-onb-facts dt{color:#aaa2ba;font-size:.76rem}
+.speech-onb-facts dd{margin:0}
+.speech-onb-notice{background:#201e2e;padding:10px 12px;border-radius:8px;font-size:.78rem;margin:12px 0;color:#d5cbe4}
+.speech-onb-progress{list-style:none;padding:0;margin:14px 0;display:grid;gap:10px}
+.speech-onb-progress li{display:flex;align-items:center;gap:10px;color:#aaa2ba;font-size:.84rem}
+.speech-onb-progress li.active{color:#eeeafa}
+.speech-onb-progress li.complete{color:#79d7b4}
+.speech-onb-progress .mark{width:22px;height:22px;display:grid;place-items:center;border:1px solid #ffffff25;border-radius:50%;font-size:.68rem;flex:none}
+.speech-onb-progress li.active .mark{border-color:#ab8cff;color:#ab8cff}
+.speech-onb progress{width:100%;height:6px;accent-color:#ab8cff;display:block}
+.speech-onb-elapsed{margin-top:6px;color:#aaa2ba;font-size:.74rem}
+.speech-onb details{border-top:1px solid #ffffff15;padding:4px 0}
+.speech-onb details summary{cursor:pointer;min-height:40px;padding:10px 0;color:#aaa2ba;font-size:.78rem}
+.speech-onb details .inner{padding:4px 0 12px}
+.speech-onb label{display:block;font-size:.78rem;color:#d5cbe4;margin:10px 0}
+.speech-onb input[type=text]{width:100%;min-width:0;min-height:40px;border:1px solid #ffffff25;border-radius:8px;padding:6px 10px;background:#0c0c16;color:#eeeafa;margin-top:4px;box-sizing:border-box}
+.speech-onb select{min-height:40px;border:1px solid #ffffff25;border-radius:8px;padding:6px 10px;background:#0c0c16;color:#eeeafa;margin-top:4px}
+.speech-onb .consent{display:flex;align-items:flex-start;gap:9px;margin:10px 0}
+.speech-onb .consent input{width:18px;height:18px;flex:none;accent-color:#9677d6;margin-top:2px}
+.speech-onb .transcript{margin:12px 0;padding:14px;border:1px solid #ffffff20;border-radius:8px;font-size:.95rem;min-height:44px}
+.speech-onb .transcript small{display:block;color:#aaa2ba;font-size:.72rem;margin-bottom:6px}
+.speech-onb [role=alert]{color:#ffc2bb}
+.speech-onb .good{color:#79d7b4}
+.speech-onb .warn{color:#f2c887}
+.speech-onb-owner{font-size:.74rem;color:#aaa2ba;margin-top:12px}
+.speech-onb-owner textarea{width:100%;min-height:52px;border:1px solid #ffffff20;border-radius:8px;background:#0c0c16;color:#d5cbe4;font-size:.72rem;padding:6px 8px;box-sizing:border-box;resize:vertical}
+@media(max-width:767px){.speech-onb-body{padding:16px 14px}.speech-onb-actions{align-items:stretch}.speech-onb-actions .primary,.speech-onb-actions .quiet{width:100%}.speech-onb-facts .fact{grid-template-columns:80px minmax(0,1fr)}}
+.speech-onb .voice-button-inline{position:static;left:auto;bottom:auto;width:auto;min-height:44px;padding:8px 16px;font-size:.84rem;background:#ab8cff;border-color:transparent;color:#171023;font-weight:650}

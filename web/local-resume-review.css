@@ -50,7 +50,9 @@
  .resume-review .resume-review__consent{padding:12px}
 }
 
-/* OFF view has no transport, credentials or permission mutations. */
+/* OFF view has no transport, credentials or permission mutations.
+   The light canvas is intentional: it reads as a non-live preview inside the
+   dark Console and stays readable on the standalone owner page. */
 .resume-off{min-width:0;color:#172238;line-height:1.65}
 .resume-off p{margin:8px 0;overflow-wrap:anywhere}
 .resume-off .resume-off__notice{margin:14px 0 18px;padding:14px 16px;border:1px solid #bdcbe1;border-left:4px solid #60759b;border-radius:8px;background:#edf2f9;color:#263b5b}
@@ -70,10 +72,43 @@
 .resume-off button:focus-visible,.resume-off input:focus-visible,.resume-off select:focus-visible{outline:3px solid #304d94;outline-offset:3px}
 @media(max-width:600px){.resume-off__actions{flex-direction:column}.resume-off .resume-off__actions button{width:100%}}
 
-/* The normal Console can use a dark palette; keep the OFF review canvas readable. */
-.local-mcp-settings .resume-off{background:#f4f7fc;border-color:#c9d4e6;border-radius:12px}
+/* The normal Console uses a dark palette: the OFF preview and the unsent-draft
+   review inside Settings share it (the standalone owner page keeps light). */
+.local-mcp-settings .resume-off{color:#eeeafa;background:#1b1929;border:1px solid #5c526d;border-radius:12px;padding:12px}
+.local-mcp-settings .resume-off__notice{background:#1e2a33;border-color:#5c526d;border-left-color:#4a7d8c;color:#d8e4ea}
+.local-mcp-settings .resume-off__notice strong{color:#eeeafa}
+.local-mcp-settings .resume-off button{color:#dfc8ff;background:#302845;border-color:#5d4d78}
+.local-mcp-settings .resume-off button:hover:not(:disabled){background:#3d3358;border-color:#7a68a0}
+.local-mcp-settings .resume-off button:disabled{color:#8b8496;background:#232030;border-color:#3a3644;opacity:.6}
+.local-mcp-settings .resume-off .resume-off__preview{color:#fff;background:#5d4d94;border-color:#5d4d94}
+.local-mcp-settings .resume-off .resume-off__preview:hover{background:#4d3f7d}
+.local-mcp-settings .resume-off__form input:not([type=checkbox]),.local-mcp-settings .resume-off__form select{color:#f1ecff;background:#161522;border-color:#444153}
+.local-mcp-settings .resume-off button:focus-visible,.local-mcp-settings .resume-off input:focus-visible,.local-mcp-settings .resume-off select:focus-visible{outline:3px solid #ab8cff;outline-offset:3px}
+.local-mcp-settings .resume-review{color:#eeeafa}
+.local-mcp-settings .resume-review .resume-review__step{color:#c9b8f0}
+.local-mcp-settings .resume-review h3{color:#eeeafa}
+.local-mcp-settings .resume-review__heading>p:last-child{color:#aaa2ba}
+.local-mcp-settings .resume-review .resume-review__summary{border-color:#5c526d;background:#5c526d}
+.local-mcp-settings .resume-review__summary>div{background:#1b1929}
+.local-mcp-settings .resume-review__summary>.resume-review__folder{background:#211c33}
+.local-mcp-settings .resume-review dt{color:#c9b8f0}
+.local-mcp-settings .resume-review code{color:#d8e4ea}
+.local-mcp-settings .resume-review__summary dd>p{color:#aaa2ba}
+.local-mcp-settings .resume-review__identity{border-bottom-color:#3a3644}
+.local-mcp-settings .resume-review__identity code{border-color:#5c526d;background:#161522}
+.local-mcp-settings .resume-review h4{color:#d8cbec}
+.local-mcp-settings .resume-review .resume-review__technical{border-color:#5c526d;background:#1b1929}
+.local-mcp-settings .resume-review__technical>summary{color:#c9b8f0}
+.local-mcp-settings .resume-review__technical>div{border-top-color:#3a3644}
+.local-mcp-settings .resume-review .resume-review__consent{border-color:#5c526d;background:#211c33}
+.local-mcp-settings .resume-review .resume-review__primary{color:#fff;background:#5d4d94;border-color:#5d4d94}
+.local-mcp-settings .resume-review .resume-review__primary:hover:not(:disabled){background:#4d3f7d;border-color:#4d3f7d}
+.local-mcp-settings .resume-review .resume-review__primary:disabled{color:#a89fc0;background:#3a3450;border-color:#3a3450}
+.local-mcp-settings .resume-review .resume-review__secondary{color:#dfc8ff;background:#302845;border-color:#5d4d78}
+.local-mcp-settings .resume-review .resume-review__secondary:hover:not(:disabled){background:#3d3358;border-color:#7a68a0}
+.local-mcp-settings .resume-review button:focus-visible,.local-mcp-settings .resume-review summary:focus-visible,.local-mcp-settings .resume-review input:focus-visible{outline:3px solid #ab8cff;outline-offset:3px}
 
 
-/* Keep ordinary connection actions readable inside the light owner canvas, including dark Console palettes. */
-.resume-active button:not(.resume-review__primary):not(.resume-review__secondary){color:#233d67;background:#fff;border:1px solid #9baecb;font:inherit;min-height:44px}
-.resume-active button:not(.resume-review__primary):not(.resume-review__secondary):disabled{color:#56627b;background:#e3e8f1;border-color:#c0cada;opacity:1}
+/* Keep ordinary connection actions readable inside the light owner canvas. */
+.local-owner .resume-active button:not(.resume-review__primary):not(.resume-review__secondary){color:#233d67;background:#fff;border:1px solid #9baecb;font:inherit;min-height:44px}
+.local-owner .resume-active button:not(.resume-review__primary):not(.resume-review__secondary):disabled{color:#56627b;background:#e3e8f1;border-color:#c0cada;opacity:1}

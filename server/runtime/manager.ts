@@ -7,13 +7,13 @@ import {localControlAssertion} from './local-control-ticket.ts';
 import { PiProcess } from '../adapters/pi/process.ts';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { access, lstat, realpath, stat } from 'node:fs/promises';
-import { SessionEvents } from './events.ts';
+import { SessionEvents, assistantContent, text as messageText, toolOutput, userContent } from './events.ts';
 import { historyReplay } from './history-hydration.ts';
 import { liveExecutionNodes } from '../../shared/execution-activity.ts';
 import { kitRoot, OrchestratorSource, readBoundOrchestrator } from '../adapters/orchestrator/source.ts';
 import { orchestratorKit, startKitRun, pendingKitDecisions, answerKitDecision, resumeKitRun } from '../adapters/orchestrator/start.ts';
 import { listSessions, readSession, piSessionDir, WorkspaceStore } from './workspaces.ts';
-import type { SessionInfo, Workspace, SessionOptions, ActiveSessionSummary } from '../../shared/types.ts';
+import type { SessionInfo, Workspace, SessionOptions, ActiveSessionSummary, ExecutionNode, ChatMessage } from '../../shared/types.ts';
 import { prepareAttachments } from './attachments.ts';
 import type { QueuedItem } from '../../shared/types.ts';
 import { QueueStore } from './queue-store.ts';
@@ -31,10 +31,20 @@ export class RuntimeManager {
   private retiring = new Set<string>();
   private answeringKit = new Set<string>();
   private kitRuns = new Map<string, { workspaceId: string; running: boolean; preparing?: boolean; request: string; startedAt: string; runId?: string; error?: string; finishedAt?: string; progress?: string[]; report?: string; reporting?: boolean; reportedToPi?: boolean; reportError?: string; reportHandled?: boolean; needsInput?: boolean; reportDispatchAttempted?: boolean }>();
+  // Notification-only record kept when idle eviction closes a worker: an already
+  // announced completion must not vanish with the entry that produced it. Holds
+  // completion identity/status/scope plus display metadata only — never execution
+  // nodes, chat, or worker handles. Bounded, superseded by any live/failed entry,
+  // and invalidated by a recycled/missing session file or removed workspace.
+  private static readonly retainedCompletionLimit = 256;
+  private retainedCompletions = new Map<string, { workspaceId: string; filePath: string; sessionName?: string; completion: NonNullable<ActiveSessionSummary['completion']>; updatedAt: string }>();
   private readonly reportStore?:ReportRecoveryStore;
   private readonly queueStore:QueueStore;
   private readonly resultsInstance = randomUUID();
   private externalAdmissionGuard?:()=>Promise<()=>void>;
+  private remoteBroker?:(request:unknown,assertAuthority?:()=>void)=>Promise<unknown>;
+  /** Applies only to newly created workers; existing Pi processes are preserved. */
+  setRemoteDesktopBroker(invoke:((request:unknown,assertAuthority?:()=>void)=>Promise<unknown>)|undefined){this.remoteBroker=invoke;}
   // Ordinary local Console use is separate, not advertised as isolated.
   setExternalAdmissionGuard(guard:()=>Promise<()=>void>){this.externalAdmissionGuard=guard;}
   constructor(readonly workspaces: WorkspaceStore, private readonly sessionsRoot = piSessionDir(), reportRecoveryDir?:string, queueDir?:string, private readonly finalAnswerDirectory?:string, private readonly orchestratorHistoryDir?:string) {if(reportRecoveryDir)this.reportStore=new ReportRecoveryStore(reportRecoveryDir);this.queueStore=new QueueStore(queueDir)}
@@ -48,7 +58,7 @@ export class RuntimeManager {
   controlState(workspaceId:string,sessionId:string) {
     const entry=this.active.get(sessionId);
     if(!entry||entry.session.workspaceId!==workspaceId||entry.worker.state!=='running'||this.starting.has(sessionId)||this.retiring.has(sessionId))throw new ControlRejection('target_unavailable');
-    const nodes=entry.state.execution.snapshot().nodes, job=this.kitRuns.get(sessionId);
+    const nodes=entry.state.execution.readOnlyResultNodes() as Pick<ExecutionNode,'kind'|'status'|'sourceKind'|'id'>[], job=this.kitRuns.get(sessionId);
     return {generation:entry.state.generation,busy:entry.state.busy,activeRunId:entry.state.activeRunId??null,
       approvalRequired:nodes.some(n=>n.kind==='decision'&&['waiting','blocked','unknown'].includes(n.status)),
       backgroundActive:nodes.some(n=>n.sourceKind==='pi-subagents'&&['queued','running','waiting','blocked','unknown'].includes(n.status)),
@@ -133,47 +143,92 @@ export class RuntimeManager {
   async sessions(workspaceId: string) {
     const files = await listSessions(this.workspaces.get(workspaceId), this.sessionsRoot);
     for (const active of [...this.active.values(), ...this.failed.values()]) if (active.session.workspaceId === workspaceId && !files.some(s => s.id === active.session.id)) files.unshift(active.session);
-    return files.map(s=>{const entry=this.active.get(s.id);const execution=entry?.state.execution.snapshot();return {...s,running:!!entry?.state.activeRunId||!!execution&&liveExecutionNodes(execution.nodes).some(n=>n.status==='running'),decisionCount:execution?.decisionCount??0}}).sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(!!b.running)-Number(!!a.running)||(b.updatedAt??'').localeCompare(a.updatedAt??''));
+    return files.map(s=>{const entry=this.active.get(s.id);const counts=entry?.state.execution.snapshot(true);const liveRunning=!!entry&&liveExecutionNodes(entry.state.execution.flatNodes()).some(n=>n.status==='running');return {...s,running:!!entry?.state.activeRunId||liveRunning,decisionCount:counts?.decisionCount??0}}).sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(!!b.running)-Number(!!a.running)||(b.updatedAt??'').localeCompare(a.updatedAt??''));
   }
   async activity(): Promise<ActiveSessionSummary[]> {
     const result:ActiveSessionSummary[]=[];
     for(const entry of this.active.values()){
-      const execution=entry.state.execution.snapshot();
+      const counts=entry.state.execution.snapshot(true);
+      const nodes=entry.state.execution.flatNodes();
       const job=this.kitRuns.get(entry.session.id);
       const kitRunning=job?.workspaceId===entry.session.workspaceId && job.running;
-      const liveNodes=liveExecutionNodes(execution.nodes);
+      const liveNodes=liveExecutionNodes(nodes);
       const liveWork=liveNodes.filter(n=>['agent','task','orchestrator'].includes(n.kind));
-      const recentWork=execution.nodes.filter(n=>['agent','task'].includes(n.kind)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&Date.now()-Date.parse(n.endedAt??n.updatedAt)<24*60*60*1000)
-        .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,2);
-      const work=[...liveWork,...recentWork].map(n=>({id:n.id,label:n.label,status:n.status,kind:n.kind,action:n.action}));
-      if(kitRunning&&!work.some(n=>n.kind==='orchestrator'))work.unshift({id:`kit:${entry.session.id}`,label:'Orchestrator',status:'running',kind:'orchestrator',action:undefined});
       const running=!!entry.state.activeRunId||!!kitRunning||liveNodes.some(n=>n.status==='running');
-      const terminal=(n:(typeof execution.nodes)[number])=>['completed','failed','cancelled','interrupted'].includes(n.status)&&!!n.endedAt;
-      const latestEnd=(nodes:typeof execution.nodes)=>nodes.filter(terminal).sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
-      // Conversation completion is only a finished top-level Pi run; foreground children
-      // belong to that run and their tool settles before RunCompleted. Detached background
-      // subagent roots (no parent) and kit jobs are reported separately as child/kit scope
-      // so a single finished child never looks like the whole conversation ending.
-      const runNode=latestEnd(execution.nodes.filter(n=>n.kind==='run'));
-      const detachedNode=latestEnd(execution.nodes.filter(n=>!n.parentId&&n.sourceKind==='pi-subagents'&&['agent','orchestrator'].includes(n.kind)));
-      const candidates:NonNullable<ActiveSessionSummary['completion']>[]=[
-        runNode?.endedAt?{scope:'conversation' as const,id:`${runNode.id}:${runNode.endedAt}`,status:runNode.status as 'completed'|'failed'|'cancelled'|'interrupted',at:runNode.endedAt}:undefined,
-        detachedNode?.endedAt?{scope:'subagent' as const,id:`${detachedNode.id}:${detachedNode.endedAt}`,status:detachedNode.status as 'completed'|'failed'|'cancelled'|'interrupted',at:detachedNode.endedAt}:undefined,
-        job?.finishedAt?{scope:'kit' as const,id:`kit:${entry.session.id}:${job.finishedAt}`,status:job.error?'failed' as const:'completed' as const,at:job.finishedAt}:undefined,
-      ].filter((v):v is NonNullable<typeof v>=>!!v);
-      const picked=candidates.sort((a,b)=>b.at.localeCompare(a.at))[0];
-      const completion=picked&&Date.now()-Date.parse(picked.at)<24*60*60*1000?picked:undefined;
-      if(!running&&!execution.decisionCount&&!completion&&!liveWork.length)continue;
+      // An evicted-and-reopened session hydrates chat but not the finished run
+      // nodes its notification came from; the retained record fills that gap so
+      // an unread completion survives a resume. A live newer completion wins.
+      const retained=this.retainedCompletions?.get(entry.session.id);
+      let completion=this.sessionCompletion(entry);
+      if(retained&&retained.workspaceId===entry.session.workspaceId&&(!completion||retained.completion.at>completion.at))completion=retained.completion;
+      if(!running&&!counts.decisionCount&&!completion&&!liveWork.length)continue;
       const workspace=this.workspaces.get(entry.session.workspaceId);
       const current=await readSession(entry.session.filePath,workspace);
       if(current?.name)entry.session.name=current.name;
-      result.push({sessionId:entry.session.id,workspaceId:workspace.id,sessionName:entry.session.name??'New conversation',workspaceName:workspace.name,running,decisionCount:execution.decisionCount,work,completion,updatedAt:entry.state.events.at(-1)?.timestamp??entry.session.updatedAt??workspace.lastOpenedAt});
+      const recentWork=nodes.filter(n=>['agent','task'].includes(n.kind)&&['completed','failed','cancelled','interrupted'].includes(n.status)&&Date.now()-Date.parse(n.endedAt??n.updatedAt)<24*60*60*1000)
+        .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,2);
+      const work=[...liveWork,...recentWork].map(n=>({id:n.id,label:n.label,status:n.status,kind:n.kind,action:n.action}));
+      if(kitRunning&&!work.some(n=>n.kind==='orchestrator'))work.unshift({id:`kit:${entry.session.id}`,label:'Orchestrator',status:'running',kind:'orchestrator',action:undefined});
+      result.push({sessionId:entry.session.id,workspaceId:workspace.id,sessionName:entry.session.name??'New conversation',workspaceName:workspace.name,running,decisionCount:counts.decisionCount,work,completion,updatedAt:entry.state.events.at(-1)?.timestamp??entry.session.updatedAt??workspace.lastOpenedAt});
+    }
+    // A retained completion keeps the announced result visible after idle eviction
+    // closed its worker. Live or failed entries and starting/retiring transitions
+    // always win; a recycled/missing file or removed workspace drops the record.
+    for(const [sessionId,summary] of [...(this.retainedCompletions??[])]){
+      if(this.active.has(sessionId)||this.failed.has(sessionId)||this.starting?.has(sessionId)||this.retiring?.has(sessionId))continue;
+      let workspace:Workspace;
+      try{workspace=this.workspaces.get(summary.workspaceId)}catch{this.retainedCompletions.delete(sessionId);continue}
+      const current=await readSession(summary.filePath,workspace);
+      if(!current||current.id!==sessionId){this.retainedCompletions.delete(sessionId);continue}
+      result.push({sessionId,workspaceId:workspace.id,sessionName:current.name??summary.sessionName??'New conversation',workspaceName:workspace.name,running:false,decisionCount:0,work:[],completion:summary.completion,updatedAt:summary.updatedAt});
     }
     return result.sort((a,b)=>Number(!!b.decisionCount)-Number(!!a.decisionCount)||Number(b.running)-Number(a.running)||b.updatedAt.localeCompare(a.updatedAt)).slice(0,100);
   }
+  // Conversation completion is only a finished top-level Pi run; foreground children
+  // belong to that run and their tool settles before RunCompleted. Detached background
+  // subagent roots (no parent) and kit jobs are reported separately as child/kit scope
+  // so a single finished child never looks like the whole conversation ending.
+  private sessionCompletion(entry:Active):ActiveSessionSummary['completion'] {
+    const nodes=entry.state.execution.flatNodes();
+    const job=this.kitRuns.get(entry.session.id);
+    const latestEnd=(nodes:ExecutionNode[])=>nodes.filter(n=>['completed','failed','cancelled','interrupted'].includes(n.status)&&!!n.endedAt).sort((a,b)=>b.endedAt!.localeCompare(a.endedAt!))[0];
+    const runNode=latestEnd(nodes.filter(n=>n.kind==='run'));
+    const detachedNode=latestEnd(nodes.filter(n=>!n.parentId&&n.sourceKind==='pi-subagents'&&['agent','orchestrator'].includes(n.kind)));
+    const candidates:NonNullable<ActiveSessionSummary['completion']>[]=[
+      runNode?.endedAt?{scope:'conversation' as const,id:`${runNode.id}:${runNode.endedAt}`,status:runNode.status as 'completed'|'failed'|'cancelled'|'interrupted',at:runNode.endedAt}:undefined,
+      detachedNode?.endedAt?{scope:'subagent' as const,id:`${detachedNode.id}:${detachedNode.endedAt}`,status:detachedNode.status as 'completed'|'failed'|'cancelled'|'interrupted',at:detachedNode.endedAt}:undefined,
+      job?.finishedAt?{scope:'kit' as const,id:`kit:${entry.session.id}:${job.finishedAt}`,status:job.error?'failed' as const:'completed' as const,at:job.finishedAt}:undefined,
+    ].filter((v):v is NonNullable<typeof v>=>!!v);
+    // No wall-clock expiry on the latest completion: an unread notification must
+    // not age out while the session sits idle. Retention is bounded by the
+    // retained-completions cap and by eviction/recycle invalidation instead.
+    return candidates.sort((a,b)=>b.at.localeCompare(a.at))[0];
+  }
+  // Idle eviction (and only memory-only teardown, never recycle/remove) preserves
+  // the notification a session already earned. There is deliberately no wall-clock
+  // expiry here: the client dismisses notifications by completion id, and aging
+  // out unread ones would recreate the disappeared-notification bug after a day
+  // idle. The cap bounds process-lifetime memory instead.
+  private retainIdleCompletion(entry:Active) {
+    // Merge with a record kept from an earlier eviction: the reopened entry may
+    // have lost the nodes this completion was derived from.
+    const cached=this.retainedCompletions?.get(entry.session.id);
+    let completion=this.sessionCompletion(entry);
+    if(cached&&cached.workspaceId===entry.session.workspaceId&&(!completion||cached.completion.at>completion.at))completion=cached.completion;
+    if(!completion)return;
+    let updatedAt=entry.state.events.at(-1)?.timestamp??entry.session.updatedAt;
+    try{updatedAt??=this.workspaces.get(entry.session.workspaceId).lastOpenedAt}catch{/* workspace may already be gone */}
+    const sessionId=entry.session.id;
+    // Prototype-built test doubles skip field initializers; lazily create so an
+    // eviction on a partially-initialized manager cannot throw.
+    this.retainedCompletions??=new Map();
+    this.retainedCompletions.delete(sessionId); // refresh recency
+    this.retainedCompletions.set(sessionId,{workspaceId:entry.session.workspaceId,filePath:entry.session.filePath,sessionName:entry.session.name,completion,updatedAt:updatedAt||new Date().toISOString()});
+    while(this.retainedCompletions.size>RuntimeManager.retainedCompletionLimit)this.retainedCompletions.delete(this.retainedCompletions.keys().next().value as string);
+  }
   async create(workspaceId: string): Promise<Active> {
     const workspace = this.workspaces.get(workspaceId);
-    const worker = new PiProcess(workspace.path, undefined, this.sessionsRoot, !!this.finalAnswerDirectory);
+    const worker = new PiProcess(workspace.path, undefined, this.sessionsRoot, !!this.finalAnswerDirectory,this.remoteBroker);
     await worker.start();
     try {
       const data = (await worker.call('get_state',{},startupStateTimeoutMs)).data;
@@ -211,6 +266,7 @@ export class RuntimeManager {
   async open(workspaceId: string, sessionId: string): Promise<Active> {
     if(this.retiring.has(sessionId))throw new Error('session is being recycled');
     const workspace = this.workspaces.get(workspaceId);
+    this.active.get(sessionId)?.state.touch();
     // Check `starting` FIRST: attach() registers the entry in `active` before history
     // and the durable queue finish loading. A second caller must await full hydration
     // — otherwise it could mutate (e.g. enqueue into) a queue loadQueue is about to
@@ -222,7 +278,7 @@ export class RuntimeManager {
       return entry;
     }
     const existing = this.active.get(sessionId);
-    if (existing) { if (existing.session.workspaceId !== workspaceId) throw new Error('session belongs to another workspace'); return existing; }
+    if (existing) { if (existing.session.workspaceId !== workspaceId) throw new Error('session belongs to another workspace'); existing.state.touch(); return existing; }
     // Register a `starting` placeholder BEFORE the async session listing, so a
     // second open() for the same session joins this start instead of spawning a
     // parallel worker. The deferred resolves only after full hydration (history +
@@ -235,7 +291,7 @@ export class RuntimeManager {
     void (async () => {
       const session = (await listSessions(workspace, this.sessionsRoot)).find(s => s.id === sessionId);
       if (!session) throw new Error('session not found in workspace');
-      const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot, !!this.finalAnswerDirectory);
+      const worker = new PiProcess(workspace.path, session.filePath, this.sessionsRoot, !!this.finalAnswerDirectory,this.remoteBroker);
       try {
         await worker.start();
         const data = (await worker.call('get_state',{},startupStateTimeoutMs)).data;
@@ -523,7 +579,10 @@ export class RuntimeManager {
     const { state, worker, session } = entry;
     const workspace = this.workspaces.get(session.workspaceId);
     const message = kitReportPrompt(report);
-    const previousMessages = state.chat.length;
+    // Identity boundary, not an index: the bounded chat window may evict older
+    // messages while the report run completes, so a length/slice check would
+    // silently pass or fail. The boundary message is pinned against eviction.
+    state.markChatBoundary();
     const originalName = String((await worker.call('get_state')).data?.sessionName ?? session.name ?? '');
     const persistedBefore = await worker.getMessages();
     if (!Array.isArray(persistedBefore)) throw new Error('Pi did not return session messages before the orchestrator report');
@@ -543,7 +602,7 @@ export class RuntimeManager {
       await onDispatch?.();
       await worker.call('prompt', { message });
       state.accepted();
-      if (!await finished || !state.chat.slice(previousMessages).some(item => item.role === 'assistant' && item.complete && item.text.trim()))
+      if (!await finished || !state.chatAfterBoundary().some(item => item.role === 'assistant' && item.complete && item.text.trim()))
         throw new Error('Pi did not produce a final response for the orchestrator report');
       await restore();
       // Enforcement is not prompt-only: the extension must have suppressed every tool call.
@@ -557,7 +616,7 @@ export class RuntimeManager {
       const file = await readSession(session.filePath, workspace);
       if (file?.name?.startsWith('<pi-console:')) throw new Error('Pi session name was left in report mode');
     } catch (error) { await restore(); state.rejected((error as Error).message); throw error; }
-    finally { clearTimeout(timer); unsubscribe(); }
+    finally { clearTimeout(timer); unsubscribe(); state.clearChatBoundary(); }
   }
   async startOrchestrator(workspaceId: string, sessionId: string, request: unknown) {
     await this.restoreReportRecovery(workspaceId,sessionId);
@@ -568,7 +627,7 @@ export class RuntimeManager {
     if(this.kitRuns.get(sessionId)?.workspaceId===workspaceId&&this.kitRuns.get(sessionId)?.reportError)throw new Error('resolve the failed Pi report before starting another orchestrator run');
     const entry = await this.open(workspaceId, sessionId);
     const { state, worker, session } = entry;
-    if(this.kitRuns.get(sessionId)?.needsInput||state.execution.snapshot().nodes.some(n=>n.sourceKind==='orchestrator'&&n.kind==='decision'&&n.status==='waiting'))throw new Error('answer pending orchestrator questions before starting another run');
+    if(this.kitRuns.get(sessionId)?.needsInput||entry.state.execution.flatNodes().some(n=>n.sourceKind==='orchestrator'&&n.kind==='decision'&&n.status==='waiting'))throw new Error('answer pending orchestrator questions before starting another run');
     if (state.busy || this.kitRuns.get(sessionId)?.running) throw new Error('Pi session or orchestrator is busy');
     const workspace = this.workspaces.get(workspaceId);
     // A kit-only session has no Pi user prompt from which to derive a title.
@@ -603,7 +662,7 @@ export class RuntimeManager {
     if (mode !== undefined && mode !== 'steer' && mode !== 'followUp') throw new Error('invalid prompt mode');
     if (this.kitRuns.get(sessionId)?.running||this.kitRuns.get(sessionId)?.needsInput) throw new Error('orchestrator is running or awaiting input for this session');
     const { worker, state } = control ? this.controlEntry(workspaceId,sessionId,control,true) : await this.open(workspaceId, sessionId);
-    if (this.kitRuns.get(sessionId)?.running||this.kitRuns.get(sessionId)?.needsInput||state.execution.snapshot().nodes.some(n=>n.sourceKind==='orchestrator'&&n.kind==='decision'&&n.status==='waiting')) throw new Error('orchestrator is running or awaiting input for this session');
+    if (this.kitRuns.get(sessionId)?.running||this.kitRuns.get(sessionId)?.needsInput||state.execution.flatNodes().some(n=>n.sourceKind==='orchestrator'&&n.kind==='decision'&&n.status==='waiting')) throw new Error('orchestrator is running or awaiting input for this session');
     if(this.retiring.has(sessionId))throw new Error('session is being recycled');
     if (state.busy) {
       if (!mode) throw new Error('select steer or follow-up while Pi is running');
@@ -690,6 +749,11 @@ export class RuntimeManager {
     const entry = await this.open(workspaceId, sessionId);
     await entry.state.removeQueueItem(String(id ?? ''));
   }
+  async clearQueuedPrompts(workspaceId: string, sessionId: string): Promise<QueuedItem[]> {
+    const { state } = await this.open(workspaceId, sessionId);
+    await state.clearQueue();
+    return state.snapshot().queue ?? [];
+  }
   async resumeQueuedPrompts(workspaceId: string, sessionId: string): Promise<QueuedItem[]> {
     const { state } = await this.open(workspaceId, sessionId);
     await state.resumeQueue();
@@ -712,6 +776,43 @@ export class RuntimeManager {
     await worker.call('abort', control?{expectedConsoleRunId:control.runId}:{}, 60000);
   }
   async resume(workspaceId: string, sessionId: string) { return (await this.open(workspaceId, sessionId)).state.snapshot(); }
+  // Read-only paged access to the projected persisted transcript, for the
+  // bounded in-memory chat window. `before` is an ABSOLUTE message index
+  // (exclusive end) into the projected history — snapshot.chatEarlierCount is
+  // the index of the first retained message, so before=chatEarlierCount returns
+  // the page directly preceding the in-memory tail. The session worker must
+  // already be open; this endpoint never spawns or resumes one.
+  async chatHistory(workspaceId: string, sessionId: string, before: unknown, limit: unknown, generation: unknown) {
+    const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);
+    if (!entry || entry.session.workspaceId !== workspaceId) throw new Error('session is not open; resume it before paging chat history');
+    if (generation !== undefined && generation !== entry.state.generation) { const e = new Error('chat cursor generation changed; reload snapshot') as Error & { status?: number }; e.status = 409; throw e; }
+    const all = await entry.worker.getMessages();
+    if (!Array.isArray(all)) throw new Error('Pi did not return session messages for chat history');
+    const projected: ChatMessage[] = [];
+    const tools = new Map<string, number>();
+    for (const message of all) {
+      if (message?.role === 'user' || message?.role === 'assistant') {
+        const content = message.role === 'assistant' ? assistantContent(message) : userContent(messageText(message));
+        if (content.text || 'attachments' in content || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) {
+          const chat: ChatMessage = { id: randomUUID(), role: message.role as 'user' | 'assistant', ...content, complete: true };
+          projected.push(chat);
+          for (const tool of chat.tools ?? []) tools.set(tool.id, projected.length - 1);
+        }
+      } else if (message?.role === 'toolResult') {
+        const index = tools.get(String(message.toolCallId ?? ''));
+        if (index !== undefined) {
+          const chat = projected[index];
+          const tool = chat.tools?.find(t => t.id === String(message.toolCallId));
+          if (tool) Object.assign(tool, toolOutput(message), { status: message.isError ? 'failed' : 'completed' });
+        }
+      }
+    }
+    const end = Number(before ?? projected.length);
+    if (!Number.isSafeInteger(end) || end < 0 || end > projected.length) { const e = new Error('invalid chat history cursor') as Error & { status?: number }; e.status = 400; throw e; }
+    const size = Math.min(Math.max(Number(limit ?? 200) || 200, 1), 500);
+    const start = Math.max(0, end - size);
+    return { messages: projected.slice(start, end), earlier: start };
+  }
   async snapshot(workspaceId: string, sessionId: string) {
     const entry = this.active.get(sessionId) ?? this.failed.get(sessionId);
     if (!entry || entry.session.workspaceId !== workspaceId) throw new Error('session not open; resume it first');
@@ -730,6 +831,10 @@ export class RuntimeManager {
     if (!entry || entry.session.workspaceId !== workspaceId) throw new Error('session not open; resume it first');
     return entry.state.subscribe(fn);
   }
+  private forgetCompletedKit(sessionId: string) {
+    const job = this.kitRuns.get(sessionId);
+    if (job && !job.running && !job.preparing && !job.reporting && !job.needsInput && !job.reportError) this.kitRuns.delete(sessionId);
+  }
   async closeSession(workspaceId: string, sessionId: string) {
     if (this.kitRuns.get(sessionId)?.running) throw new Error('orchestrator is running for this session');
     const entry = this.active.get(sessionId);
@@ -738,6 +843,7 @@ export class RuntimeManager {
     if (entry.state.hasPendingQueue()) throw new Error('session has queued follow-ups; remove or resume them before closing');
     entry.source?.stop(); (entry as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true; entry.state.cancelQueueDrain();
     await entry.worker.close(); this.active.delete(sessionId); this.failed.delete(sessionId);
+    this.forgetCompletedKit(sessionId);
   }
   async recycleSession(workspaceId:string,sessionId:string,move:(path:string)=>Promise<void>,cutoff?:number):Promise<void> {
     const workspace=this.workspaces.get(workspaceId);
@@ -754,8 +860,8 @@ export class RuntimeManager {
       const entry=this.active.get(sessionId)??this.failed.get(sessionId);
       if(entry&&entry.session.workspaceId!==workspaceId)throw new Error('session belongs to another workspace');
       if(cutoff!==undefined&&entry)throw new Error('session is open in Pi Console');
-      const execution=entry?.state.execution.snapshot();
-      if(entry?.state.activeRunId||execution?.decisionCount||execution?.nodes.some(n=>n.status==='running'||n.status==='waiting'))throw new Error('session is active or awaiting input');
+      const counts=entry?.state.execution.snapshot(true);
+      if(entry?.state.activeRunId||counts?.decisionCount||entry?.state.execution.flatNodes().some(n=>n.status==='running'||n.status==='waiting'))throw new Error('session is active or awaiting input');
       if(entry?.state.hasPendingQueue()||!entry&&await this.queueStore.exists(sessionId))throw new Error('session has queued follow-ups; open it and remove or resume them before recycling');
       const info=await stat(file);
       if(cutoff!==undefined&&info.mtimeMs>=cutoff)throw new Error('session was updated after retention cutoff');
@@ -764,6 +870,8 @@ export class RuntimeManager {
       const again=await readSession(file,workspace);const current=await stat(file);
       if(again?.id!==sessionId||cutoff!==undefined&&current.mtimeMs>=cutoff)throw new Error('session changed before recycling');
       await move(file);
+      this.retainedCompletions?.delete(sessionId);
+      this.forgetCompletedKit(sessionId);
     } finally {this.retiring.delete(sessionId)}
   }
   async removeWorkspace(workspaceId: string) {
@@ -772,7 +880,7 @@ export class RuntimeManager {
     if ([...this.starting.values()].length) throw new Error('cannot remove workspace while a session is starting');
     const entries = [...this.active.values(), ...this.failed.values()].filter(e => e.session.workspaceId === workspaceId);
     if ([...this.kitRuns.values()].some(job => job.workspaceId === workspaceId && job.running)) throw new Error('cannot remove workspace while its orchestrator is running');
-    if (entries.some(e => e.state.activeRunId || e.state.execution.snapshot().decisionCount || e.state.execution.snapshot().nodes.some(n => n.status === 'running' || n.status === 'waiting')))
+    if (entries.some(e => e.state.activeRunId || e.state.execution.snapshot(true).decisionCount || e.state.execution.flatNodes().some(n => n.status === 'running' || n.status === 'waiting')))
       throw new Error('cannot remove workspace while a session is active or awaiting input');
     if (entries.some(e => e.state.hasPendingQueue())) throw new Error('cannot remove workspace while a session has queued follow-ups; remove or resume them first');
     const unopenedQueued = (await listSessions(this.workspaces.get(workspaceId), this.sessionsRoot)).filter(s => !entries.some(e => e.session.id === s.id));
@@ -782,15 +890,70 @@ export class RuntimeManager {
       if (this.active.has(entry.session.id)) await entry.worker.close();
       this.active.delete(entry.session.id); this.failed.delete(entry.session.id);
     }
+    for (const [sessionId, job] of this.kitRuns) if (job.workspaceId === workspaceId) this.forgetCompletedKit(sessionId);
+    for (const [sessionId, summary] of this.retainedCompletions??[]) if (summary.workspaceId === workspaceId) this.retainedCompletions.delete(sessionId);
     await this.workspaces.remove(workspaceId);
   }
+  // Idle eviction: with no subscriber, run, pending queue, live/waiting/blocked
+  // node, owning kit job or operation in flight, an opened worker is closed and
+  // forgotten. Eviction is memory-only — nothing on disk changes — and the next
+  // open()/resume() respawns and rehydrates the same session transparently.
+  private idleEvictionTimer?: ReturnType<typeof setInterval>;
+  private evicting = false;
+  startIdleEviction(intervalMs = 60000) {
+    if (this.idleEvictionTimer) return;
+    this.idleEvictionTimer = setInterval(() => void this.evictIdle(), intervalMs);
+    this.idleEvictionTimer.unref?.();
+  }
+  async evictIdle(now = Date.now(), idleAfterMs = 15 * 60 * 1000) {
+    if (this.evicting) return;
+    this.evicting = true;
+    try {
+      for (const [sessionId, entry] of [...this.active]) {
+        // Cheap synchronous eligibility first — nothing here may await.
+        if (this.starting.has(sessionId) || this.retiring.has(sessionId) || this.answeringKit.has(sessionId)) continue;
+        if (entry.state.hasListeners() || entry.state.busy || entry.state.hasPendingQueue() || entry.state.isQueueDispatching()) continue;
+        if (entry.worker.state !== 'running' || entry.worker.hasPendingOperations()) continue;
+        if (entry.state.execution.hasLiveWork()) continue;
+        if (now - entry.state.lastAccess < idleAfterMs) continue;
+        const job = this.kitRuns.get(sessionId);
+        if (job && (job.running || job.preparing || job.needsInput || job.reportError || job.reporting)) continue;
+        let report: { status?: string } | undefined;
+        try { report = await this.reportStore?.read(sessionId); } catch { continue; } // Fail closed on read error.
+        if (report?.status === 'pending') continue;
+        // Recheck everything after the awaited disk read: a prompt, subscription,
+        // queue item or new activity may have arrived while we were blocked.
+        if (this.starting.has(sessionId) || this.retiring.has(sessionId) || this.answeringKit.has(sessionId)) continue;
+        if (entry.state.hasListeners() || entry.state.busy || entry.state.hasPendingQueue() || entry.state.isQueueDispatching()) continue;
+        if (entry.worker.state !== 'running' || entry.worker.hasPendingOperations()) continue;
+        if (entry.state.execution.hasLiveWork()) continue;
+        if (now - entry.state.lastAccess < idleAfterMs) continue;
+        const job2 = this.kitRuns.get(sessionId);
+        if (job2 && (job2.running || job2.preparing || job2.needsInput || job2.reportError || job2.reporting)) continue;
+        // Mark retiring BEFORE the close: open()/prompt() must not hand out an
+        // entry whose worker is already shutting down. `open` already rejects
+        // retiring ids, so this guard makes the race impossible, not just narrow.
+        this.retiring.add(sessionId);
+        try {
+          entry.source?.stop(); (entry as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true; entry.state.cancelQueueDrain();
+          await entry.worker.close();
+          this.active.delete(sessionId);
+          this.retainIdleCompletion(entry);
+          // A fully-finished kit job is only in-memory progress; drop it with the worker.
+          this.forgetCompletedKit(sessionId);
+        } catch { /* Eviction failure keeps the worker; next tick retries. */ }
+        finally { this.retiring.delete(sessionId); }
+      }
+    } finally { this.evicting = false; }
+  }
   async shutdown() {
+    if (this.idleEvictionTimer) { clearInterval(this.idleEvictionTimer); this.idleEvictionTimer = undefined; }
     for (const x of [...this.active.values(), ...this.failed.values()]) {
       (x as Active & { queueDrainStopped?: boolean }).queueDrainStopped = true;
       x.state.cancelQueueDrain(); x.source?.stop();
     }
     await Promise.allSettled([...this.active.values()].map(x => x.worker.close()));
-    this.active.clear(); this.failed.clear();
+    this.active.clear(); this.failed.clear(); this.retainedCompletions?.clear();
   }
   activeWorker(sessionId: string) { return this.active.get(sessionId)?.worker; }
 }

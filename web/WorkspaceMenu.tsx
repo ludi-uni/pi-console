@@ -1,10 +1,11 @@
 import React, { useRef } from 'react';
 
-export default function WorkspaceMenu({ name, disabled, onOpenHost, onEdit }: {
+export default function WorkspaceMenu({ name, disabled, onOpenHost, onEdit, onAdd }: {
   name: string;
   disabled: boolean;
   onOpenHost: () => void;
   onEdit: () => void;
+  onAdd: () => void;
 }) {
   const details = useRef<HTMLDetailsElement>(null);
   const summary = useRef<HTMLElement>(null);
@@ -23,6 +24,7 @@ export default function WorkspaceMenu({ name, disabled, onOpenHost, onEdit }: {
       <button onClick={() => { close(); onEdit(); }}>Edit selected workspace</button>
       <button className="workspace-explorer" title="Opens this workspace on the host Windows desktop, not this device" disabled={disabled} onClick={() => { close(); onOpenHost(); }}>Open on host PC</button>
       <small>Opens on the host Windows desktop, not this device.</small>
+      <button onClick={() => { close(); onAdd(); }}>Add a workspace</button>
     </div>
   </details>;
 }

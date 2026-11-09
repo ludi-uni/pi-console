@@ -1,3 +1,16 @@
 .local-owner{max-width:850px;margin:24px auto;padding:20px;font:16px/1.6 system-ui;color:#172238;background:#f5f7fb;box-sizing:border-box}.local-owner section{margin:24px 0;border:1px solid #cbd5e1;padding:16px}.local-owner label{display:block;margin:12px 0}.local-owner input:not([type=checkbox]),.local-owner select{display:block;width:100%;max-width:100%;box-sizing:border-box;padding:8px}.local-owner button{margin:8px 8px 8px 0;padding:8px;max-width:100%}.local-owner [role=alert]{color:#8a1620;overflow-wrap:anywhere}.local-owner p{overflow-wrap:anywhere}@media(max-width:600px){.local-owner{margin:0;padding:12px}.local-owner section{padding:10px}}
-.local-mcp-settings{line-height:1.6;min-width:0}.local-mcp-settings section{padding:12px;border:1px solid var(--border,#cbd5e1);margin:16px 0}.local-mcp-settings label{display:block;margin:12px 0}.local-mcp-settings input:not([type=checkbox]),.local-mcp-settings select{display:block;width:100%;box-sizing:border-box;padding:8px}.local-mcp-settings button{margin:8px 8px 8px 0;max-width:100%}.local-mcp-settings p,.local-mcp-settings code{overflow-wrap:anywhere}.local-mcp-settings [role=alert]{color:#b42d39}
-.local-mcp-settings input[type=checkbox]{display:inline-block;width:auto;vertical-align:middle;margin-right:8px}.local-mcp-settings summary{cursor:pointer;padding:8px 0}
+.local-mcp-settings{line-height:1.6;min-width:0;color:#eeeafa}.local-mcp-settings section{padding:12px;border:1px solid var(--border,#ffffff15);border-radius:10px;margin:16px 0}.local-mcp-settings label{display:block;margin:12px 0}.local-mcp-settings input:not([type=checkbox]),.local-mcp-settings select{display:block;width:100%;box-sizing:border-box;padding:8px}.local-mcp-settings button{margin:8px 8px 8px 0;max-width:100%}.local-mcp-settings p,.local-mcp-settings code{overflow-wrap:anywhere}.local-mcp-settings [role=alert]{color:#ffafa8}
+.local-mcp-settings input[type=checkbox]{display:inline-block;width:auto;vertical-align:middle;margin-right:8px;accent-color:#9677d6}.local-mcp-settings summary{cursor:pointer;padding:8px 0}
+/* The settings page is dark: keep the connection panels on the Console palette
+   instead of the standalone light owner canvas. Functional/aria contracts are unchanged. */
+.local-mcp-settings .fio-connect fieldset{border-color:#5c526d;background:#1b1929}
+.local-mcp-settings .fio-connect .fio-status{background:#1e2a33;border-left-color:#4a7d8c;color:#d8e4ea}
+.local-mcp-settings .fio-connect .fio-help,.local-mcp-settings .fio-connect .fio-review{border-color:#5c526d;background:#1b1929}
+.local-mcp-settings .fio-connect [role=alert]{color:#ffafa8}
+.local-mcp-settings .resume-active button:not(.resume-review__primary):not(.resume-review__secondary){color:#dfc8ff;background:#302845;border-color:#5d4d78}
+.local-mcp-settings .resume-active button:not(.resume-review__primary):not(.resume-review__secondary):disabled{color:#8b8496;background:#232030;border-color:#3a3644;opacity:.55}
+.local-mcp-settings .resume-active>section,.local-mcp-settings .resume-active>details{border-color:#5c526d}
+.local-mcp-settings input:not([type=checkbox]),.local-mcp-settings select,.local-mcp-settings textarea{color:#f1ecff;background:#161522;border-color:#444153}
+.local-mcp-settings .resume-setup__step{border-color:#5c526d;background:#1b1929}
+.local-mcp-settings .local-mcp-settings__where{color:#aaa2ba}
+.local-mcp-settings h2,.local-mcp-settings h3{color:#eeeafa}

@@ -1,0 +1,51 @@
+# Remote Connections
+
+通常のpi-consoleの設定にRemote connectionsを追加する。新規PiセッションへPiパッケージを読み込み、通常のモデルから接続名`caivi-vm`で利用する。既存チャット、Computer Use、read/edit/build/Gitのツールは上書きしない。
+
+## 設定と秘密登録
+
+GUIとTransferのendpoint、role、世代、公開SHA256 pin、有効期限をそれぞれ登録する。pinは利用者が公開情報と照合して承認する。自動TOFUは行わない。登録済みという表示は接続成功ではない。
+
+Worker tokenはGUI／Transferで分離し、既存のWindows DPAPI CurrentUser実装で暗号化して保存する。PFX／秘密鍵はゲストに残す。平文tokenをJSON設定、DB、ログ、Piの引数、会話へ保存しない。
+
+通常ConsoleがHTTPの場合も、秘密入力フォームは提供しない。「ローカルHTTPS資格情報チャネルを準備」から、Console PC上の限定HTTPS画面を開く。公開fingerprintと期限を照合してから登録する。ホスト管理用TLS秘密鍵もCurrentUser DPAPIで保存する。ゲストのTLS identityとは別で、ゲストidentityやFirewallは変更しない。証明書をOSの信頼ストアへ自動登録せず、検証を無効化しない。初回の信頼確認が完了しなければ入力しない。
+
+Accessモードでは既存の検証済みAccess principalとConsole管理者登録を使う。local-onlyモードではliteral loopback／同一origin／専用管理ヘッダーを検査する。両モードとも秘密登録は限定HTTPS経路だけで受け付け、登録後の値は再表示しない。
+
+## 日常操作
+
+接続を有効にし、`read` grantをオンにした後、新しい通常チャットで「caivi-vmのCAIVI画面を確認して、UIAとスクリーンショットから状態を報告して」と依頼する。モデルへ渡すのは接続名と限定操作引数だけ。内部endpoint、token、秘密パス、PID/HWNDは操作引数に公開しない。観測結果も既知のUIA項目／PNGへ射影し、内部identityや操作journalを会話へ返さない。
+
+GUI接続テストは実際のreadonly inspectで確認する。既存Transferプロトコルには認証付きreadonly pingがないため、転送試験を別途承認して実行するまではTransferは「未実測」と表示する。TCP到達やtoken登録だけでConnectedにしない。
+
+## 権限（grants）
+
+Settings → Remote connectionsの「権限」パネルで、接続単位の恒久的な権限を個別にオン・オフできる。`read`（UIA検査とスクリーンショット）、`operate`（事前設定済みCAIVI操作のクリック・入力・ドラッグ）、`send`（登録済みartifactのfile_send）の3種類。`operate`は`read`を前提とする（同じGUI認証情報と対象ウィンドウを使うため）。保存済みの接続でも各grantは「許可済み」だけでは実行可能にならず、証明書承認・認証情報登録・対象ウィンドウのバインド・未確認書込みの不存在などの前提条件が揃って初めて「利用可能」となる。パネルにはgrantごとの現在の実効状態と不足している前提条件が表示される。既存インストールからの移行では新しい権限は一切付与されず、すべてオフから始まる。
+
+各grantをオフにすると対応する操作は`remote_grant_denied`でKNOWN拒否され、要求承認の有無に関係なくdispatchされない。承認待ちの間にgrantを取り消した場合も、送信前の再検査で拒否される。
+
+## 対象ウィンドウと承認済みファイル
+
+GUI操作は、サーバー検証済みの1つのウィンドウidentity（pid・hwnd・hash・sessionの完全一致）にのみ実行される。「対象 CAIVI ウィンドウ」パネルの「ウィンドウを検査してバインド」を押すと、実際のreadonly inspectが1回実行され、認証済み応答からidentityを採取して`approved-target.json`へ保存する。利用者やモデルがidentityの値を直接入力する経路はない。
+
+file_sendが受け付けるのは、サーバー所有の`approved-artifacts` manifestに登録された名前だけである。「承認済みファイル」パネルのファイル選択で1ファイル（16 MiBまで）を選ぶと、専用の管理ルートがバイト列を検証してConsoleデータディレクトリー内の`remote-desktop/approved-artifacts/staging`へ排他作成でステージし、名前・サイズ・SHA-256を表示する。登録は別の明示操作（「登録…」→確認）で、登録時にサーバーがバイト列を読み直し、名前・サイズ・SHA-256をDPAPI封印済みmanifestへ保存する。ステージしただけでは送信されず、登録解除は同じプロセス内で即座にfile_sendを拒否する。任意パスの入力経路はなく、送信時にもmanifest記載のパス・ハッシュ・サイズを再検証する。手動でstagingフォルダーへコピーする従来の方法も同じ登録手順で利用できる。
+
+manifestが暗号化形式でない場合（旧形式のプレーンテキスト等）は、その内容を一切信頼せず全操作を`artifact_manifest_untrusted`で拒否する。元ファイルは保持され、利用者が明示する回復操作だけが各エントリーのディスク上バイト列を再検証して封印済みmanifestへ再登録する（検証できないエントリーは除外）。
+
+GUI書込み（クリック・文字入力・ドラッグ）とファイル転送は、上記grantに加えて要求ごとの明示的なoperator承認が必要である。書込み要求が実行キューの先頭に来ると、Brokerは最大60秒間だけ保留する承認IDを発行し、元のinvoke呼出し内で判断を待つ。SettingsRemoteConnectionsには保留中のカードが1件だけ表示され、操作名と対象（転送では許可済みartifact名・サイズ・SHA-256）を確認して、その要求だけを承認または拒否できる。承認は当該invokeにだけ効き、役割全体や時間枠の許可にはならない。拒否・期限切れ・run権限喪失・接続設定変更・grant取消では要求はKNOWN拒否で閉じ、UNKNOWNは掛けず再送もしない。既存Phase7の一度限りのjournalを解除して日常操作へ一般化しない。ゲスト側の`mutation_already_attempted`等の一回限りのjournalはこの承認でも迂回・消去しない。
+
+書込みはdispatch直前に要求ごとのpendingジャーナルへ記録される。認証済みKNOWN-okの応答と対象検証が揃った場合に限り、その要求が作った項目だけが解除され、ロールは引き続き書込み可能となる。応答喪失・検証不一致・例外では項目は既存のUNKNOWN/tombstone台帳へ移され、以後そのロールの書込みは拒否される（read系の再観測は許可）。過去のUNKNOWN・tombstoneを消去・巻き戻す経路はない。
+
+## 権限と停止
+
+BrokerはConsoleが開始した実行のIPCだけを受け付ける。runの終了・停止・tool abort時に待機要求の権限を失効し、送信直前に再検査する。操作意図を記録した後に結果を証明できなければUNKNOWNを保持し、自動再送しない。readonly再観測は許可するが、UNKNOWNを解除しない。
+
+接続無効化やgrant取消は新しい要求を拒否する。既に送信した操作が取り消されたとは扱わない。証明書期限切れ、認証失敗、対象不一致では別接続・旧token・ホストGUIへfallbackしない。
+
+ホストの通常開発用shellは維持する。Remoteツールの制限は、同じWindowsユーザーで動く任意コードや別のホストGUIツールをOSレベルで隔離する保証ではない。DPAPIも同一ユーザーの任意コードから秘密を隔離しない。ゲストWorker自体と実装コードを信頼する前提であり、侵害されたゲストが画面や画像に秘密を埋め込むことまで防ぐとは主張しない。
+
+## 適用と切戻し
+
+API／Workerの新規読込にはConsoleの再起動が必要。既存実行と未送信テキストを保全し、利用者が影響を確認して承認した後だけ実施する。既存セッションファイルや設定は消さない。新しいUIは別出力先でビルド・検証してから配信先へ適用する。
+
+機能の停止は接続を無効化し、新規セッションでパッケージが読み込まれないことを確認する。ソース／配信物を戻す場合は作業前のworking-treeスナップショットを使い、ユーザー既存差分をgit reset等で失わない。新しい認証・UNKNOWN・journalを古いバックアップで巻き戻さない。

@@ -9,7 +9,7 @@ import { ForegroundSubagentAdapter } from '../adapters/subagents/foreground.ts';
 import { AsyncSubagentAdapter } from '../adapters/subagents/async-widget.ts';
 
 type Raw = Record<string, any>;
-const text = (message: Raw): string => Array.isArray(message.content) ? message.content.filter((v: Raw) => v.type === 'text').map((v: Raw) => String(v.text ?? '')).join('') : typeof message.content === 'string' ? message.content : '';
+export const text = (message: Raw): string => Array.isArray(message.content) ? message.content.filter((v: Raw) => v.type === 'text').map((v: Raw) => String(v.text ?? '')).join('') : typeof message.content === 'string' ? message.content : '';
 const summary = (value: unknown): string => typeof value === 'string' ? value.slice(0, 400) : '';
 function toolInfo(value: Raw): ChatTool {
   const args = value.arguments ?? value.args;
@@ -25,14 +25,14 @@ export function assistantContent(message: Raw): Pick<ChatMessage,'text'|'thinkin
   const tools = blocks.filter((block:Raw)=>block.type==='toolCall').slice(0,64).map(toolInfo);
   return { text:text(message), ...(thinking.trim()?{thinking}:{}), ...(tools.length?{tools}:{}) };
 }
-function toolOutput(result: Raw): Pick<ChatTool, 'output' | 'outputTruncated'> {
+export function toolOutput(result: Raw): Pick<ChatTool, 'output' | 'outputTruncated'> {
   const output = typeof result?.content === 'string' ? result.content : Array.isArray(result?.content) ? result.content.map((block: Raw) => block.type === 'text' ? String(block.text ?? '') : `[Non-text output: ${String(block.type ?? 'unknown')}]`).join('\n') : '';
   return { output: output.slice(0,16000), outputTruncated: output.length > 16000 };
 }
 // Chat keeps the user's own text separate from attachment payloads. The full raw
 // message (wrappers included) is what Pi receives; only the display projection is
 // split here so resumed history matches the live echo exactly.
-function userContent(value: string): Pick<ChatMessage, 'text' | 'attachments'> {
+export function userContent(value: string): Pick<ChatMessage, 'text' | 'attachments'> {
   const split = splitPromptAttachments(value);
   return { text: split.text, ...(split.attachments.length ? { attachments: split.attachments } : {}) };
 }
@@ -50,8 +50,22 @@ export function previewToolInput(args: unknown): string {
   }
   return '';
 }
+// Bounded in-memory chat window. Memory only — the persisted Pi transcript is
+// never touched and evicted messages stay readable via the paged history API.
+const retainedChatCount = 500;
+const retainedChatBytes = 4 * 1024 * 1024;
+// Conservative UTF-16 estimate without allocating encoded copies of large tool
+// output on every trim. Include all retained payloads, not just visible text.
+const stringBytes = (value?: string): number => (value?.length ?? 0) * 2;
+const chatMessageBytes = (m: ChatMessage): number => 256 + stringBytes(m.text) + stringBytes(m.thinking)
+  + (m.tools ?? []).reduce((bytes, tool) => bytes + 128 + stringBytes(tool.command) + stringBytes(tool.input) + stringBytes(tool.output), 0)
+  + (m.attachments ?? []).reduce((bytes, attachment) => bytes + 128 + stringBytes(attachment.name) + stringBytes(attachment.preview), 0);
+// Only a complete prefix with settled tools may leave memory. An in-flight or
+// acknowledgement-pinned message, and at least the latest message, always stay.
 export class SessionEvents {
   readonly chat: ChatMessage[] = [];
+  private chatTotal = 0;
+  private chatEvicted = 0;
   readonly events: ExecutionEvent[] = [];
   seq = 0;
   // Unique per server process + session projection; seq alone resets across restarts, so
@@ -93,6 +107,7 @@ export class SessionEvents {
   enqueueFollowUp(text: unknown, attachments: unknown) { return this.mutateQueue(() => this.commitEnqueueFollowUp(text, attachments)); }
   editQueueItem(id: string, revision: unknown, text: unknown) { return this.mutateQueue(() => this.commitEditQueueItem(id, revision, text)); }
   removeQueueItem(id: string) { return this.mutateQueue(() => this.commitRemoveQueueItem(id)); }
+  clearQueue() { return this.mutateQueue(() => this.commitClearQueue()); }
   beginQueueDispatch() { return this.mutateQueue(() => this.commitBeginQueueDispatch()); }
   finishQueueDispatch(id: string, completed: boolean, error?: string) { return this.mutateQueue(() => this.commitFinishQueueDispatch(id, completed, error)); }
   private queueDrained?: () => void;
@@ -118,11 +133,44 @@ export class SessionEvents {
   private readonly subagents = new ForegroundSubagentAdapter((node,type) => this.publishNode(node,type));
   private readonly asyncSubagents = new AsyncSubagentAdapter(node => this.publishNode(node));
   constructor(readonly session: SessionInfo, private readonly runtime: () => ProcessState) {}
+  hasListeners() { return this.listeners.size > 0; }
+  // Last user-visible activity for idle eviction: any event or API touch bumps
+  // it, so an active conversation is never evicted out from under the UI.
+  lastAccess = Date.now();
+  touch() { this.lastAccess = Date.now(); }
   publishNode(node: ExecutionNode, type: EventType = 'ExecutionNodeUpdated') {
     this.emit(type,node.id,{node},{source:node.sourceKind === 'pi-subagents'?'pi-subagents':'orchestrator', sourceRef:{kind:node.sourceKind,nativeId:node.nativeId},parentId:node.parentId,status:node.status,certainty:node.correlation==='unknown'?'derived':'observed'});
   }
-  subscribe(fn: (e: ExecutionEvent) => void) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  snapshot(): Snapshot { return { session: this.session, runtime: this.runtime(), activeRunId: this.activeRunId, chat: this.chat.map(m => ({...m})), events: [...this.events], execution: this.execution.snapshot(), queue: this.queueSnapshot(), queueHeld: this.queueHeld, seq: this.seq, generation: this.generation }; }
+  subscribe(fn: (e: ExecutionEvent) => void) { this.touch(); this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  snapshot(): Snapshot { this.enforceChatCap(); return { session: this.session, runtime: this.runtime(), activeRunId: this.activeRunId, chat: this.chat.map(m => ({...m})), events: [...this.events], execution: this.execution.snapshot(), queue: this.queueSnapshot(), queueHeld: this.queueHeld, seq: this.seq, generation: this.generation, ...(this.chatEvicted ? { chatTruncated: true, chatEarlierCount: this.chatEvicted } : {}) }; }
+  // Count of evicted-from-memory messages; also the absolute `before` cursor the
+  // paged history endpoint uses to return the window directly preceding chat[0].
+  get chatEarlierCount() { return this.chatEvicted; }
+  private pushChat(message: ChatMessage) { this.chat.push(message); this.chatTotal++; this.enforceChatCap(); }
+  private enforceChatCap() {
+    const pin = (m: ChatMessage) => m === this.currentMessage || m === this.chatBoundary;
+    const sizes = this.chat.map(chatMessageBytes);
+    let bytes = sizes.reduce((total, size) => total + size, 0), drop = 0;
+    while (drop < this.chat.length - 1 && (this.chat.length - drop > retainedChatCount || bytes > retainedChatBytes)) {
+      const message = this.chat[drop];
+      if (pin(message) || !message.complete || message.tools?.some(tool => tool.status === 'running')) break;
+      bytes -= sizes[drop++];
+    }
+    if (!drop) return;
+    this.chat.splice(0, drop);
+    this.chatEvicted += drop;
+  }
+  // Identity-based boundary for kit report acknowledgement. The boundary message
+  // is pinned against eviction, so "after boundary" stays exact while the window
+  // ahead of it is trimmed.
+  private chatBoundary?: ChatMessage;
+  markChatBoundary() { this.chatBoundary = this.chat.at(-1); }
+  clearChatBoundary() { this.chatBoundary = undefined; }
+  chatAfterBoundary() {
+    if (!this.chatBoundary) return [...this.chat];
+    const index = this.chat.indexOf(this.chatBoundary);
+    return index < 0 ? [] : this.chat.slice(index + 1);
+  }
   private toQueuedItem(item: StoredQueueItem): QueuedItem {
     const split = splitPromptAttachments(this.preparedText(item));
     return { id: item.id, message: split.text, revision: item.revision, ...(split.attachments.length ? { attachments: split.attachments } : {}), queuedAt: item.queuedAt, status: item.status, ...(item.error ? { error: item.error } : {}) };
@@ -217,6 +265,24 @@ export class SessionEvents {
     this.emit('ExecutionNodeUpdated', this.queueNodeId(id), { node: { id: this.queueNodeId(id), kind: 'task', label: `Queued: ${item.text.slice(0, 80)}`, status: 'cancelled', correlation: 'explicit', sourceKind: 'pi', updatedAt: new Date().toISOString() } }, { status: 'cancelled' });
     this.queueChanged();
   }
+  // Explicit operator discard of the whole pre-dispatch queue. Removes every
+  // pending/held/failed item AND clears the durable pause — including a pause
+  // left on an empty queue — so a later enqueue is not silently held. A claimed
+  // 'dispatching' item rejects the whole clear: it may already be reaching Pi.
+  // The cleared state is persisted before it is acknowledged; on a failed write
+  // items and the held flag roll back unchanged. No resume, no dispatch.
+  private async commitClearQueue(): Promise<void> {
+    if (this.dispatchingQueue || this.queue.some(item => item.status === 'dispatching')) throw this.statusError(409, 'a queued item is already being sent to Pi; wait for it to settle before discarding the queue');
+    if (!this.queue.length && !this.queueHeld) return;
+    const removed = [...this.queue];
+    const held = this.queueHeld;
+    this.queue = [];
+    this.queueHeld = false;
+    try { await this.persistQueue(); }
+    catch (error) { this.queue = removed; this.queueHeld = held; throw error; }
+    for (const item of removed) this.emit('ExecutionNodeUpdated', this.queueNodeId(item.id), { node: { id: this.queueNodeId(item.id), kind: 'task', label: `Queued: ${item.text.slice(0, 80)}`, status: 'cancelled', correlation: 'explicit', sourceKind: 'pi', updatedAt: new Date().toISOString() } }, { status: 'cancelled' });
+    this.queueChanged();
+  }
 
   // CAS handoff for the manager's drain loop: the claim is marked synchronously before
   // any await, then the 'dispatching' state is persisted BEFORE the prompt RPC runs —
@@ -283,17 +349,17 @@ export class SessionEvents {
   wakeQueueDrain() { this.maybeDrainQueue(); }
   private maybeDrainQueue() { const notify = this.queueRequest; this.queueRequest = undefined; this.queueDrained = undefined; if (notify) notify(); else this.queueWakePending = true; }
   load(messages: Raw[]) {
-    this.chat.length = 0;
+    this.chat.length = 0; this.chatTotal = 0; this.chatEvicted = 0;
     for (const message of messages) {
       if (message.role === 'user' || message.role === 'assistant') {
         const content = message.role === 'assistant' ? assistantContent(message) : userContent(text(message));
-        if (content.text || 'attachments' in content || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.chat.push({ id: randomUUID(), role: message.role, ...content, complete: true });
+        if (content.text || 'attachments' in content || message.role === 'assistant' && ('thinking' in content || 'tools' in content)) this.pushChat({ id: randomUUID(), role: message.role, ...content, complete: true });
       } else if (message.role === 'toolResult') this.updateChatTool(String(message.toolCallId ?? ''), { ...toolOutput(message), status: message.isError ? 'failed' : 'completed' });
     }
     // A live assistant message can be streaming while the snapshot is applied: keep its
     // in-flight bubble so the eventual message_end completes a visible message instead of
     // updating an orphaned object dropped from chat.
-    if (this.currentMessage && !this.chat.includes(this.currentMessage)) this.chat.push(this.currentMessage);
+    if (this.currentMessage && !this.chat.includes(this.currentMessage)) this.pushChat(this.currentMessage);
   }
   private updateChatTool(id: string, update: Partial<ChatTool>) {
     if (!id) return undefined;
@@ -301,9 +367,11 @@ export class SessionEvents {
     if (!message) return undefined;
     const tool = { ...message.tools!.find(item => item.id === id)!, ...update };
     message.tools = message.tools!.map(item => item.id === id ? tool : item);
+    this.enforceChatCap();
     return { chatMessageId: message.id, chatTool: tool };
   }
   private emit(type: EventType, entityId: string, payload: Record<string, unknown> = {}, options: Partial<ExecutionEvent> = {}) {
+    this.lastAccess = Date.now();
     const event: ExecutionEvent = { schemaVersion: 1, eventId: randomUUID(), seq: ++this.seq, generation: this.generation, timestamp: new Date().toISOString(),
       workspaceId: this.session.workspaceId, sessionId: this.session.id,
       runId: this.activeRunId ?? this.pendingRunId ?? 'unattributed', type, entityId, source: 'pi-rpc', sourceRef:{kind:'pi',nativeId:options.toolCallId}, certainty: 'observed', payload, ...options };
@@ -316,7 +384,7 @@ export class SessionEvents {
     this.pendingRunId = randomUUID(); this.finalJournal?.begin(this.pendingRunId); this.failure = undefined; this.stopped = false; this.pendingPromptEcho = undefined;
     if (message) {
       const user: ChatMessage = { id: randomUUID(), role: 'user', ...userContent(message), complete: true };
-      this.chat.push(user); this.pendingPromptEcho = message;
+      this.pushChat(user); this.pendingPromptEcho = message;
       // Publish the same identity as the snapshot: an HTTP refresh can fail or be
       // overtaken by newer SSE deltas, so it cannot be the only way users see input.
       this.emit('MessageCompleted', user.id, { text: user.text, attachments: user.attachments, role: 'user' }, { source: 'console', parentId: this.pendingRunId, status: 'completed' });
@@ -380,8 +448,17 @@ export class SessionEvents {
     if (!this.activeRunId) return;
     const id = this.activeRunId;
     this.finalJournal?.terminal(id,status);
+    // Finalize the in-flight bubble before clearing it: an interrupted/failed run
+    // leaves a partial message and possibly-running tools. Without this the pinned
+    // incomplete head would stay un-evictable and repeated interruptions would
+    // defeat the chat window bound.
+    if (status !== 'completed' && this.currentMessage) {
+      if (this.currentMessage.tools) for (const tool of this.currentMessage.tools) if (tool.status === 'running') tool.status = 'failed';
+      this.currentMessage.complete = true;
+    }
     this.emit(status === 'completed' ? 'RunCompleted' : 'RunFailed', id, { summary: reason ?? status }, { status, certainty: 'derived', source: 'console' });
     this.activeRunId = undefined; this.currentMessage = undefined; this.pendingPromptEcho = undefined; this.messageBlocks.clear(); this.thinkingBlocks.clear();
+    this.enforceChatCap();
     this.maybeDrainQueue();
   }
   ingest(raw: Raw): void {
@@ -419,7 +496,7 @@ export class SessionEvents {
           if (!this.queuedPrompts.length && this.publishedSteerQueued) { this.publishedSteerQueued = false; this.queueChanged(); }
         }
         const user: ChatMessage = { id: randomUUID(), role: 'user', ...userContent(body), complete: true };
-        this.chat.push(user);
+        this.pushChat(user);
         this.emit('MessageCompleted', user.id, { text: user.text, attachments: user.attachments, role: 'user' }, { parentId: this.activeRunId, status: 'completed' });
       }
       this.pendingPromptEcho = undefined;
@@ -429,7 +506,7 @@ export class SessionEvents {
       // don't suppress a later steering instruction (even with identical text).
       this.pendingPromptEcho = undefined;
       this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false };
-      this.messageBlocks.clear(); this.thinkingBlocks.clear(); this.chat.push(this.currentMessage);
+      this.messageBlocks.clear(); this.thinkingBlocks.clear(); this.pushChat(this.currentMessage);
       this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }, { parentId: this.activeRunId });
     }
     if (raw.type === 'message_update' && this.currentMessage) {
@@ -456,7 +533,7 @@ export class SessionEvents {
       }
     }
     if (raw.type === 'message_end' && raw.message?.role === 'assistant') {
-      if (!this.currentMessage) { this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false }; this.chat.push(this.currentMessage); this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }); }
+      if (!this.currentMessage) { this.currentMessage = { id: randomUUID(), role: 'assistant', text: '', complete: false }; this.pushChat(this.currentMessage); this.emit('MessageStarted', this.currentMessage.id, { role: 'assistant' }); }
       const content = assistantContent(raw.message);
       if (content.tools) content.tools = content.tools.map(tool => ({ ...this.currentMessage!.tools?.find(item => item.id === tool.id), ...tool }));
       Object.assign(this.currentMessage, content); this.currentMessage.complete = true;

@@ -4,7 +4,8 @@ import{consoleDataDir}from'./data-directory.mjs';import{ensureManagedResumeBroke
 import{createLocalEnrollmentState}from'./local-mcp-enrollment.mjs';import{unknownLocalClientInspection}from'./local-mcp-client-state.mjs';import{hash}from'../server/local-mcp-identity.mjs';
 const createLocalFileBackend=options=>atStageSync('STORE_RESOLVE',()=>diagnosticBackend(createFileBackend(options)));
 import{privateResumePost}from'./local-resume-transport.mjs';export{privateResumePost};
-async function main(){const args=process.argv.slice(2);if(args.length!==2||args[0]!=='--local-resume'||!/^[\w-]{1,100}$/.test(args[1]))throw Error();const clientId=args[1],dataDir=atStageSync('STORE_RESOLVE',()=>consoleDataDir()),codec=atStageSync('STORE_RESOLVE',()=>diagnosticCodec(createWindowsProtection({authorized:true}))),serverStore=createLocalFileBackend({directory:path.join(dataDir,'local-mcp-resume')});let pinned,session;
+import{MCP_RELEASE_ENABLED}from'../shared/release-availability.mjs';
+export async function runLocalResumeMcp(clientId){if(!/^[\w-]{1,100}$/.test(clientId??''))throw Error('invalid local-resume client id');const dataDir=atStageSync('STORE_RESOLVE',()=>consoleDataDir()),codec=atStageSync('STORE_RESOLVE',()=>diagnosticCodec(createWindowsProtection({authorized:true}))),serverStore=createLocalFileBackend({directory:path.join(dataDir,'local-mcp-resume')});let pinned,session;
  const verifyServer=async()=>{const v=await atStage('BROKER_VERIFY',()=>ensureManagedResumeBroker({directory:dataDir}));pinned=v;return v};
  try{let loaded,sid;const getSid=()=>sid??=codec.currentSid(),need=async required=>{if(loaded)return loaded;const owner=await serverStore.peekOwner();if(!owner){if(required)throw stageError('IDENTITY_CHECK',Error('owner_binding_unavailable'));return null}if(owner.sid!==await getSid())throw stageError('IDENTITY_CHECK',Error('owner_binding_unavailable'));return loaded=createLocalClientState({owner,codec,backend:createLocalFileBackend({directory:path.join(dataDir,'local-mcp-client-state'),createOnCommit:true})})};
   let enrollmentStore;const pendingStore=async()=>enrollmentStore??=createLocalEnrollmentState({owner:{sid:await getSid(),installationId:hash(path.resolve(dataDir).toLowerCase()),ownerId:'same-user-enrollment'},codec,backend:createLocalFileBackend({directory:path.join(dataDir,'local-mcp-enrollment'),createOnCommit:true})});
@@ -14,4 +15,15 @@ async function main(){const args=process.argv.slice(2);if(args.length!==2||args[
   const input=createInterface({input:process.stdin,crlfDelay:Infinity});for await(const line of input){if(Buffer.byteLength(line)>8192){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:null,error:{code:-32600,message:'request_limit'}})+'\n');continue}let m;try{m=JSON.parse(line)}catch{process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:null,error:{code:-32700,message:'parse_error'}})+'\n');continue}const response=await session.message(m);if(response)process.stdout.write(JSON.stringify(response)+'\n')}
  }finally{await session?.dispose();await serverStore.close()}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)diagnosticContext(()=>main().catch(error=>{process.stderr.write('Local resume requires an explicitly enabled managed Console, verified owner broker, and prior owner approval.\n');process.stderr.write(startupDiagnosticLine(error));process.exitCode=1}));
+// Shared failure path: the CLI subprocess and a direct `node local-resume-mcp.mjs`
+// invocation both keep stdout clean and report only the sanitized stage on
+// stderr — never raw error details.
+const failLaunch=error=>{process.stderr.write('Local resume requires an explicitly enabled managed Console, verified owner broker, and prior owner approval.\n');process.stderr.write(startupDiagnosticLine(error));process.exitCode=1};
+/** Runs the MCP stdio session inside one diagnostic context; the caller only
+ * waits for the returned promise (exit code is set on failure). */
+export const runLocalResumeMcpSession=clientId=>diagnosticContext(()=>runLocalResumeMcp(clientId).catch(failLaunch));
+const invoked=()=>{if(!process.argv[1]||import.meta.url!==pathToFileURL(process.argv[1]).href)return{direct:false};const args=process.argv.slice(2);if(args.length===2&&(args[0]==='--local-resume'||args[0]==='local-resume'))return{direct:true,clientId:args[1]};return{direct:true,invalid:true}};
+const direct=invoked();
+// Gate the executable entry only: direct stdio invocation cannot reopen the
+// release boundary, while the exported session runner stays usable in tests.
+if(direct.direct){if(MCP_RELEASE_ENABLED!==true){process.stderr.write('local-resume is not available in this release.\n');process.exitCode=1}else if(direct.invalid||!/^[\w-]{1,100}$/.test(direct.clientId??'')){process.stderr.write('invalid local-resume arguments: expected --local-resume <client id>\n');process.exitCode=2}else void runLocalResumeMcpSession(direct.clientId)}

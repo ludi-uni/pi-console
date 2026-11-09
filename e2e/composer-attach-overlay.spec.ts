@@ -180,12 +180,14 @@ async function draftSessions(page: import('@playwright/test').Page) {
   await page.route('**/api/state?*', route => { const u = new URL(route.request().url()); return route.fulfill({ json: state(u.searchParams.get('workspaceId')!, u.searchParams.get('sessionId')!) }); });
 }
 async function storedDraft(page: import('@playwright/test').Page, workspaceId = 'w1', sessionId = 's1') {
-  return page.evaluate(async scope => new Promise<{ text: string; files: { name: string; size: number; type: string }[] } | null>((resolve, reject) => {
+  // Returns the raw stored record: acknowledged clears keep an empty tombstone
+  // ({text:'',files:[],revision:n}) rather than deleting the row (CAS contract).
+  return page.evaluate(async scope => new Promise<{ text: string; files: { name: string; size: number; type: string }[]; revision: number; submission?: unknown } | null>((resolve, reject) => {
     const request = indexedDB.open('pi-console-composer-drafts-v1', 1);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result, transaction = db.transaction('drafts', 'readonly'), read = transaction.objectStore('drafts').get(scope);
-      transaction.oncomplete = () => { const d = read.result; db.close(); resolve(d ? { text: d.text, files: d.files.map((f: File) => ({ name: f.name, size: f.size, type: f.type })) } : null); };
+      transaction.oncomplete = () => { const d = read.result; db.close(); resolve(d ? { text: d.text, files: d.files.map((f: File) => ({ name: f.name, size: f.size, type: f.type })), revision: d.revision ?? 0, submission: d.submission } : null); };
       transaction.onabort = () => { db.close(); reject(transaction.error); };
     };
   }), JSON.stringify([workspaceId, sessionId]));
@@ -200,7 +202,8 @@ test('composer drafts preserve full text and large attachments across scopes and
   await prompt.fill(text);
   await page.locator('input[type=file]').setInputFiles([{ name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from(note) }, { name: 'large.png', mimeType: 'image/png', buffer: image }]);
   await expect(page.getByLabel('Attached files')).toContainText('large.png');
-  await expect.poll(() => storedDraft(page)).toEqual({ text, files: [{ name: 'note.txt', size: Buffer.byteLength(note), type: 'text/plain' }, { name: 'large.png', size: image.length, type: 'image/png' }] });
+  let savedRevision = 0;
+  await expect.poll(async () => { const d = await storedDraft(page); if (d) savedRevision = d.revision; return d && { text: d.text, files: d.files }; }).toEqual({ text, files: [{ name: 'note.txt', size: Buffer.byteLength(note), type: 'text/plain' }, { name: 'large.png', size: image.length, type: 'image/png' }] });
   await page.getByLabel('Session list').getByRole('button', { name: /^Chat B/ }).click(); await expect(prompt).toHaveValue('');
   await expect(page.getByLabel('Attached files')).toHaveCount(0); await prompt.fill('B only');
   await page.getByLabel('Workspace', { exact: true }).selectOption('w2'); await page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ }).click(); await expect(prompt).toHaveValue('');
@@ -211,7 +214,10 @@ test('composer drafts preserve full text and large attachments across scopes and
   expect(posted).toHaveLength(0); await page.screenshot({ path: 'test-results/composer-draft-restored.png' });
   await page.locator('.composer-actions .button-primary').click(); await expect(prompt).toHaveValue(''); await expect(page.getByLabel('Attached files')).toHaveCount(0);
   expect(posted).toHaveLength(1); expect(posted[0].message).toBe(text); expect(posted[0].attachments[0].text).toBe(note); expect(posted[0].attachments[1].data).toBe(image.toString('base64'));
-  await expect.poll(() => storedDraft(page)).toBeNull(); await page.reload(); await expect(prompt).toHaveValue('');
+  // The acknowledged clear keeps an empty tombstone so a stale tab cannot
+  // resurrect the draft via the old revision-zero CAS slot.
+  await expect.poll(async () => { const d = await storedDraft(page); return d && { text: d.text, files: d.files.length, submission: d.submission, bumped: d.revision > savedRevision }; }).toEqual({ text: '', files: 0, submission: undefined, bumped: true });
+  await page.reload(); await expect(prompt).toHaveValue('');
   await page.getByLabel('Session list').getByRole('button', { name: /^Chat B/ }).click(); await expect(prompt).toHaveValue('B only');
 });
 
@@ -464,6 +470,7 @@ for (const operation of ['edit', 'remove', 'resume'] as const) {
         await page.getByRole('button', { name: 'Edit queued message 1', exact: true }).click();
         await page.getByRole('textbox', { name: 'Edit queued message 1', exact: true }).fill('edited');
       }
+      if (operation === 'remove') page.once('dialog', dialog => dialog.accept());
       await action().click(); await expect(action()).toBeDisabled();
     };
     await begin(); await expect.poll(() => pending.length).toBe(1);
@@ -653,7 +660,8 @@ test('queued follow-ups list with edit draft, Save/Cancel and steer labelled not
   await page.getByLabel('Edit queued message 1').fill('revised text');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   expect((await edited).postDataJSON()).toMatchObject({ id: 'q1', revision: 0, text: 'revised text' });
-  // Remove posts the item id.
+  // Confirming Remove posts the item id.
+  page.once('dialog', dialog => dialog.accept());
   const removed = page.waitForRequest(r => r.url().endsWith('/api/queue/remove'));
   await page.getByRole('button', { name: 'Remove queued message 1' }).click();
   expect((await removed).postDataJSON()).toMatchObject({ id: 'q1' });

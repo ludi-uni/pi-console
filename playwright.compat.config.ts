@@ -3,7 +3,7 @@ import { defineConfig } from '@playwright/test';
 // Source-only UI tests: no Console server, Pi worker or model/provider calls.
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['browser-compatibility.spec.ts', 'ux-review-regressions.spec.ts'],
+  testMatch: ['browser-compatibility.spec.ts', 'ux-review-regressions.spec.ts', 'activity-rendering.spec.ts', 'remote-approval.spec.ts'],
   timeout: 30000,
   workers: 1,
   outputDir: 'test-results/compatibility',

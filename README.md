@@ -2,25 +2,21 @@
 
 [English](README.en.md)
 
-Pi の会話と実行状況を、Windows の PC やスマートフォンのブラウザーで確認・操作するためのローカル優先の Web コンソールです。Node.js 24 以降、互換性のある Pi（安定版 0.99.2〜1.4.0）が必要です。Pi の TUI と**同じ会話画面ではなく**、Console が専用の SDK ワーカーで別の Pi セッションを管理します。互換性は最新版 1.4.0 で検証済みです。範囲内の中間バージョンは semver の安定版として許可していますが、すべてのバージョンを個別に実行確認したわけではありません。
+Pi の会話と実行状況を、Windows の PC やスマートフォンのブラウザーで確認・操作するためのローカル優先の Web コンソールです。Node.js 24 以降、互換性のある Pi（安定版 0.99.2〜1.5.0）が必要です。Pi の TUI と**同じ会話画面ではなく**、Console が専用の SDK ワーカーで別の Pi セッションを管理します。Pi 1.5.0 と 1.4.0 で SDK ワーカーの初期化・拡張連携・履歴取得をモデル呼び出しなしで確認しました。1.5.0 ではパッケージ導入からの起動・停止も確認しています。対応範囲内の安定版を許可しますが、すべてのバージョンを個別に実行確認したわけではありません。
 
 > **安全上の注意**：標準モードは認証なしで `127.0.0.1` にだけ接続します。LAN やインターネットへ直接公開しないでください。遠隔利用には [Cloudflare Tunnel + Access の設定](docs/cloudflare-access.md)が必要です。
 >
 > **旧版から更新する場合**：以前の Windows スタートアップ版は、npm の更新時に消える場所へワークスペース登録を保存していました。**更新する前に**[バックアップと移行手順](docs/upgrade-storage.ja.md)を実行してください。更新後には旧データを回収できない場合があります。
 
-## Dots向け結果read（開発中・既定OFF）
+## Dots・ローカル MCP の提供休止
 
-対象runの履歴差分、親/子/queue等のaggregate状態、明示成果物の一覧/内容、対象metadataの共通read coreを追加しました。[ツール契約と制約](docs/dots-results-read-contract.ja.md)を参照してください。
+今回のリリースでは、Pi Console が提供する Dots 連携と MCP 接続（ローカル再開、フォルダー、Pi control、readonly）を一時的に利用対象から外しています。設定画面の接続項目・接続受付・`local-resume` CLI は利用できず、従来の環境変数や保存設定でも再有効化されません。
 
-これは既存status-only scopeへの追加公開ではありません。両MCP endpointと稼働接続には未登録で、本文/path/artifact用の明示feature grant、認証済みadapter、実client転送検証が別途必要です。読み取りはworkerを起動せず、承認に回答せず、`controlIsolationVerified()`や更新拒否も変更しません。現runtimeは完全な子作業censusを持たないため全体完了はincomplete、観測のないmodelはunknownです。本番反映・実Dots合格ではありません。
-
-最終回答text 1件に限り、SDK 1.0.2の保存API→runtimeの専用journal→共通read core→認証済み `/mcp/dots` adapter→pin実binaryの隔離縦断を追加しました。`final_answer` のexact-run＋期限付き明示grantが必要です。[契約](docs/dots-final-answer-contract.ja.md) / [実装・検証と未確認範囲](docs/dots-final-answer-result.ja.md)。既定OFF・通常server未登録・実Dots未接続・本番未適用です。
-
-keyholders契約による独立final-onlyレビュー/許可/解除UIと、通常serverの共通compositionをソースへ結線しました。bootstrapは明示 `enabled:false`、専用credentialも未設定です。[今回の隔離UI→実binary→解除検証と操作手順](docs/dots-final-owner-implementation-result.ja.md)。実Dots・本番は未接続/未適用、Access経由owner管理と同一SIDリスクは未解消です。
+再開発用の実装と既存の保存設定は削除しません。通常の Pi セッションで利用する Pi 自身の MCP 拡張、チャット、Execution、音声入力、リモート接続は対象外です。`owner-login` は音声設定などの本人確認用として残ります。`docs/dots-*` やローカル MCP の設計・検証資料は過去の開発記録であり、今回のリリースの有効化手順ではありません。
 
 ## すぐに使う
 
-Windows PC に [Node.js 24 以降](https://nodejs.org/en/download) と [互換性のある Pi（安定版 0.99.2〜1.4.0）](https://github.com/earendil-works/pi) を用意します。Pi でモデルを利用するための設定も必要です。
+Windows PC に [Node.js 24 以降](https://nodejs.org/en/download) と [互換性のある Pi（安定版 0.99.2〜1.5.0）](https://github.com/earendil-works/pi) を用意します。Pi でモデルを利用するための設定も必要です。
 
 ```mermaid
 flowchart LR
@@ -93,15 +89,12 @@ Pi からの起動と Windows スタートアップは、通常 `~/.pi/agent/pi-
 | 旧版から安全に更新する | [更新前のバックアップと移行](docs/upgrade-storage.ja.md) |
 | 保護された遠隔アクセスを設定する | [Cloudflare Tunnel + Access（英語）](docs/cloudflare-access.md) |
 | 内部設計を調べる | [設計資料への案内](docs/operations.ja.md#設計資料) |
+| このリリースの変更を確認する | [0.5.4 リリースノート](docs/releases/0.5.4.ja.md) |
 
 ## 今回のソース追加（未公開・本番未適用）
 
 - **停止中更新**：`node .\scripts\stopped-update.mjs --check` の1操作で、既存起動元・観測不足・本人の残る操作を診断します。通常終了後の排他、対象 identity、ソフトウェア専用バックアップ／復元コアを追加しましたが、管理外の直接起動を排他できないため **本番 `--apply` は拒否を維持**します。診断を「停止保証」「更新完了」と扱わないでください。[停止中更新の手順と限界](docs/stopped-update-operations.ja.md)
-- **Dots の対象別権限**：別途承認された適用後、本人ローカル GUI の「設定 → Dots ワークスペース権限」で登録 ID/path と観測済み session を個別選択し、read/control の確認・保存・解除を行えます。初期値は none。control は専用認証とワーカー隔離の証明が必須で、**現行の本番ワーカーは隔離未証明のため操作を拒否**します（scopeやキー設定だけでは解除不可）。全体許可・接続変更・キー入力・Events 操作は提供しません。[本人の設定手順と認証・解除の境界](docs/dots-workspace-permissions.ja.md)
-
-新しい権限は `/mcp/dots` 用です。**既存 `/mcp/readonly` の固定 scope は移行・拡張・解除されません**。実 Dots 接続の互換性・本番動作は未検証で、適用・操作用認証設定・接続変更・実際の許可保存は別途本人確認が必要です。準備済み139ファイルの Events tgz は今回の新ソースの配布物ではありません。
-
-検証結果・保全記録・残る阻害要因は [今回の成果物レポート](docs/workspace-permissions-update-result.ja.md) にまとめています。`npm test` には更新／権限のコア回帰を追加しました。SDK 実コード契約とブラウザーの隔離検証はレポート記載の専用コマンドで行い、本番接続を伴う `test:real` は今回実行しません。
+- **Dots・ローカル MCP**：上記のとおり提供休止中です。既存の権限データは保全しますが、接続や権限変更の画面・API は提供しません。過去の実装記録は [成果物レポート](docs/workspace-permissions-update-result.ja.md) に残しています。
 
 ## 任意のペット素材
 

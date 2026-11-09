@@ -419,3 +419,89 @@ test('failed edit cannot roll back a concurrent accepted edit; failed remove kee
   assert.equal(state.snapshot().queue![0].message, 'accepted');
 });
 const storeLoad = async (file: string) => JSON.parse(await readFile(file, 'utf8'));
+
+test('clear discards every pending/held/failed item, lifts an empty pause, and never sends', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-qclear-'));
+  const queueDir = join(root, 'queue');
+  try {
+    const { workspace, runtime, state, calls, session } = await rig(root, { queueDir, failDispatch: true });
+    await runtime.prompt(workspace.id, session.id, 'will be held', [], 'followUp');
+    await runtime.prompt(workspace.id, session.id, 'still pending', [], 'followUp');
+    state.ingest({ type: 'agent_settled' }); await tick();
+    assert.equal(state.snapshot().queue!.length, 2);
+    assert.equal(state.snapshot().queue![0].status, 'held');
+    assert.equal(state.snapshot().queue![1].status, 'pending');
+    assert.equal(state.snapshot().queueHeld, true);
+    await runtime.clearQueuedPrompts(workspace.id, session.id);
+    await tick();
+    assert.equal(state.snapshot().queue!.length, 0);
+    assert.equal(state.snapshot().queueHeld, false);
+    assert.equal(calls.filter(c => c.type === 'prompt').length, 1, 'clear never resends or drains');
+    assert.equal(state.hasPendingQueue(), false);
+    // Removed items leave cancelled execution nodes.
+    const cancelled = state.events.filter(e => e.type === 'ExecutionNodeUpdated' && e.status === 'cancelled' && e.entityId.startsWith('console-queue:'));
+    assert.equal(cancelled.length, 2);
+    // The empty queue deletes the durable file: a restart sees nothing.
+    assert.equal(await (runtime as any).queueStore.exists(session.id), false);
+    // A pause left on an empty queue must still be cleared so a later enqueue
+    // dispatches normally instead of staying silently held.
+    await state.pauseQueue();
+    assert.equal(state.snapshot().queueHeld, true);
+    await runtime.clearQueuedPrompts(workspace.id, session.id);
+    assert.equal(state.snapshot().queueHeld, false);
+    assert.equal(state.snapshot().queue!.length, 0);
+    await runtime.shutdown();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('clear rolls back items and the held flag when persistence fails', async () => {
+  const state = new SessionEvents({ id: 'clear-rollback', workspaceId: 'w', filePath: 'unused' }, () => 'running');
+  const item = await state.enqueueFollowUp('keep me', []);
+  await state.beginQueueDispatch();
+  await state.finishQueueDispatch(item.id, false, 'delivery unconfirmed');
+  await state.enqueueFollowUp('behind it', []);
+  state.setQueueStore({ save: async () => { throw new Error('clear write refused'); } } as unknown as QueueStore);
+  const before = state.snapshot();
+  await assert.rejects(state.clearQueue(), /clear write refused/);
+  assert.deepEqual(state.snapshot().queue, before.queue, 'failed clear restores every item');
+  assert.equal(state.snapshot().queueHeld, true, 'failed clear restores the pause');
+});
+
+test('clear is rejected while an item is dispatching; nothing is removed', async () => {
+  const state = new SessionEvents({ id: 'clear-dispatching', workspaceId: 'w', filePath: 'unused' }, () => 'running');
+  const item = await state.enqueueFollowUp('claimed', []);
+  await state.enqueueFollowUp('unclaimed', []);
+  assert.ok(await state.beginQueueDispatch());
+  await assert.rejects(state.clearQueue(), (e: Error) => (e as any).status === 409);
+  assert.equal(state.snapshot().queue!.length, 2);
+  assert.equal(state.snapshot().queue![0].status, 'dispatching');
+  // After the claimed item finishes, a clear succeeds and drops the survivor.
+  await state.finishQueueDispatch(item.id, true);
+  await state.clearQueue();
+  assert.equal(state.snapshot().queue!.length, 0);
+});
+
+test('cleared items do not auto-drain: resume is a no-op and enqueues start clean', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-console-qnoresume-'));
+  const queueDir = join(root, 'queue');
+  try {
+    const { workspace, runtime, state, calls, session } = await rig(root, { queueDir, autoSettle: false });
+    await runtime.prompt(workspace.id, session.id, 'discard me', [], 'followUp');
+    state.markStop(); state.ingest({ type: 'agent_settled' }); await tick();
+    assert.equal(state.snapshot().queueHeld, true);
+    await runtime.clearQueuedPrompts(workspace.id, session.id);
+    await tick();
+    assert.equal(calls.filter(c => c.type === 'prompt').length, 0, 'cleared item never sent');
+    await runtime.resumeQueuedPrompts(workspace.id, session.id);
+    await tick();
+    assert.equal(calls.filter(c => c.type === 'prompt').length, 0, 'resume after clear cannot resurrect');
+    // A new enqueue after the clear dispatches on the next settle — the pause is gone.
+    state.preparePrompt('next run'); state.accepted();
+    await runtime.prompt(workspace.id, session.id, 'fresh item', [], 'followUp');
+    settle(state); await tick();
+    assert.deepEqual(calls.filter(c => c.type === 'prompt').map(c => c.args.message), ['fresh item']);
+    settle(state); await tick();
+    assert.equal(state.snapshot().queue!.length, 0);
+    await runtime.shutdown();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

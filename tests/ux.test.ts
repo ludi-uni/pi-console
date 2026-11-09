@@ -106,7 +106,7 @@ test('kit progress and final report render as separate, escaped chat content',()
 
 test('Markdown output supports GFM, safe links and file references',()=>{
   const markup=renderToStaticMarkup(createElement(MarkdownContent,{text:'# Heading\n\n**bold** and [notes](docs/notes.md), `README.md`\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n\n```ts\nconst x=1;\n```\n\n<script>alert(1)</script>\n\n[unsafe](javascript:alert(1))'}));
-  assert.match(markup,/<h1>Heading<\/h1>/);assert.match(markup,/<strong>bold<\/strong>/);
+  assert.match(markup,/<h1 id="heading">Heading<\/h1>/);assert.match(markup,/<strong>bold<\/strong>/);
   assert.match(markup,/<table>/);assert.match(markup,/type="checkbox"/);
   assert.match(markup,/Copy code|const x=1/);
   assert.match(markup,/Open docs\/notes.md in workspace/);assert.match(markup,/Open README.md in workspace/);
@@ -127,6 +127,61 @@ test('Markdown output supports GFM, safe links and file references',()=>{
   const lines=renderToStaticMarkup(createElement(MarkdownContent,{text:'See src/main.ts:42 and [there](src/main.ts#L42), or `main.py:7`.'}));
   assert.match(lines,/Open src\/main.ts:42 in workspace/);
   assert.match(lines,/Open main.py:7 in workspace/);
+  // Relative links inside a markdown preview resolve against the file's own
+  // directory, Windows drive/alias absolute paths stay verbatim.
+  const nested=renderToStaticMarkup(createElement(MarkdownContent,{text:'[sibling](sibling.md) and [up](../top.md) and [abs](C:\\Dev\\x.md)',basePath:'docs/guide/notes.md'}));
+  assert.match(nested,/Open docs\/guide\/sibling.md in workspace/);
+  assert.match(nested,/Open docs\/top.md in workspace/);
+  assert.match(nested,/Open C:\\Dev\\x.md in workspace/);
+  // A section fragment scrolls inside the preview instead of opening a 404.
+  const section=renderToStaticMarkup(createElement(MarkdownContent,{text:'## Deep Dive\n\nSee [below](#deep-dive) and [other](other.md#part-two).',basePath:'a.md'}));
+  assert.match(section,/id="deep-dive"/);
+  assert.match(section,/Open a.md#deep-dive in workspace/);
+  assert.match(section,/Open other.md#part-two in workspace/);
+  // Chat has no basePath: a `#fragment` link is a local in-message scroll, and
+  // `#L12` never becomes a file open on an empty path — no <a>, no file title.
+  const chatFragment=renderToStaticMarkup(createElement(MarkdownContent,{text:'## Details\n\nSee [details](#details) and [line 12](#L12).'}));
+  assert.doesNotMatch(chatFragment,/<a /);
+  assert.match(chatFragment,/Jump to section details/);
+  assert.doesNotMatch(chatFragment,/Jump to section 12/);
+  assert.equal((chatFragment.match(/<button/g)??[]).length,1);
+  assert.doesNotMatch(chatFragment,/in workspace/);
+  // Host-absolute references keep their root — they are never glued onto the
+  // preview's parent directory (the server still enforces containment).
+  const rooted=renderToStaticMarkup(createElement(MarkdownContent,{text:'[up](/abs/top.md) and [win](\\\\abs\\top.md) and [drive](D:\\abs\\top.md)',basePath:'docs/guide/notes.md'}));
+  assert.match(rooted,/Open \/abs\/top.md in workspace/);
+  // Markdown collapses the literal `\\` escape, so the rooted form that
+  // reaches the resolver is `\\abs\top.md` — kept verbatim, never joined.
+  assert.match(rooted,/Open \\abs\\top.md in workspace/);
+  assert.match(rooted,/Open D:\\abs\\top.md in workspace/);
+  assert.doesNotMatch(rooted,/Open docs\/guide\/[\/\\]abs/);
+  // A media path with a line suffix never becomes an empty-href link —
+  // explicit link, bare autolinked text, and inline code all stay non-links.
+  for(const text of['[clip](media/clip.mp4:2)','See media/clip.mp4:2 here.','`media/clip.mp4:2`']){
+    const media=renderToStaticMarkup(createElement(MarkdownContent,{text,basePath:'a.md'}));
+    assert.doesNotMatch(media,/href=""/);
+    assert.doesNotMatch(media,/clip\.mp4:2 in workspace/);
+    assert.doesNotMatch(media,/<a /);
+  }
+  // Reference-style links tag their label so inline code inside is never
+  // re-linked into nested buttons, and the label still resolves locally.
+  const reference=renderToStaticMarkup(createElement(MarkdownContent,{text:'[`src/main.ts`][doc]\n\n[doc]: docs/notes.md',basePath:'x.md'}));
+  assert.equal((reference.match(/<button/g)??[]).length,1);
+  assert.equal((reference.match(/<a /g)??[]).length,0);
+  assert.match(reference,/Open docs\/notes.md in workspace/);
+  // Inline code file references resolve against the preview's base path.
+  const nestedCode=renderToStaticMarkup(createElement(MarkdownContent,{text:'Run `note.txt` now.',basePath:'docs/guide/a.md'}));
+  assert.match(nestedCode,/Open docs\/guide\/note.txt in workspace/);
+  // Code inside an explicit link is never re-linked into nested buttons.
+  const linkedCode=renderToStaticMarkup(createElement(MarkdownContent,{text:'[`src/main.ts`](docs/notes.md)',basePath:'x.md'}));
+  assert.match(linkedCode,/<button[^>]*><code>src\/main.ts<\/code><\/button>|<code>src\/main.ts<\/code><\/button>/);
+  assert.equal((linkedCode.match(/<button/g)??[]).length,1);
+  // An image used as a link label must not introduce a second control either.
+  for(const text of ['[![preview](media/portrait.png)](docs/notes.md)','[![preview](media/portrait.png)][doc]\n\n[doc]: docs/notes.md']){
+    const linkedImage=renderToStaticMarkup(createElement(MarkdownContent,{text}));
+    assert.equal((linkedImage.match(/<button/g)??[]).length,1);
+    assert.match(linkedImage,/Open docs\/notes.md in workspace/);
+  }
 });
 
 test('completion notifications ignore initial history and repeat poll results',()=>{

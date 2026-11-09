@@ -1,7 +1,7 @@
 import {readJsonBody}from'./body.ts';
 import {renewalReason,serverRenewalReasons}from'./local-mcp-diagnostic.mjs';
 const renewalServerReasons=new Set(serverRenewalReasons);
-const ownerRoutes=new Set(['view','review','approve','cancel','result','revoke']);
+const ownerRoutes=new Set(['view','review','approve','cancel','result','revoke','recover']);
 const clientRoutes=new Set(['request','claim','resume','renew','rpc','cancel-request']);
 /** Only wired into the existing separate literal-127 owner broker. Never public listener. */
 export function createLocalMcpHttp({service,ownerVerify,ownerExpiry,port}){
@@ -26,6 +26,7 @@ export function createLocalMcpHttp({service,ownerVerify,ownerExpiry,port}){
    else if(route==='approve')result=await app.approve(b,check,ownerExpiry(req));
    else if(route==='cancel'){if(Object.keys(b).join()!=='reviewId')throw Error();result=await app.cancel(b.reviewId,check)}
    else if(route==='result'){if(Object.keys(b).join()!=='requestId')throw Error();result=await app.result(b.requestId,check)}
+   else if(route==='recover'){if(Object.keys(b).sort().join()!=='requestId,reviewId')throw Error();result=await app.recover(b,check)}
    else if(route==='revoke')result=await app.revoke(b,check);
    else if(route==='rpc'){if(!single('authorization')||!/^Bearer [0-9a-f]{64}$/.test(req.headers.authorization??'')||Object.keys(b).sort().join()!=='args,name')throw Error();result=await app.call(req.headers.authorization.slice(7),b.name,b.args)}
    if(owner)check();send(200,result);

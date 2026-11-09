@@ -2,11 +2,17 @@
 
 [日本語](README.md)
 
-A local-first web console for Pi conversations and execution timelines on Windows PCs and mobile browsers. Requires Node.js 24+ and a compatible Pi (stable 0.99.2–1.4.0). Its Web conversation is a **separate Pi session managed by a Console-owned SDK worker**, not a mirror of the TUI conversation. Compatibility is verified against the latest release (1.4.0); intermediate stable releases in the range are accepted but not individually exercised.
+A local-first web console for Pi conversations and execution timelines on Windows PCs and mobile browsers. Requires Node.js 24+ and a compatible Pi (stable 0.99.2–1.5.0). Its Web conversation is a **separate Pi session managed by a Console-owned SDK worker**, not a mirror of the TUI conversation. SDK initialization, extension integration and direct history reads were checked without model calls on Pi 1.5.0 and 1.4.0; package installation and start/stop were also checked on 1.5.0. Stable versions within the supported range are accepted, but not every version was individually exercised.
 
 > **Security:** The default server binds only to `127.0.0.1` without authentication. Do not expose it directly to a LAN or the internet. Protected remote access requires [Cloudflare Tunnel + Access](docs/cloudflare-access.md).
 >
 > **Upgrading an older version:** An older Windows Startup installation may have saved workspace registrations inside a directory npm removes on update. Run the [pre-upgrade backup and migration procedure](docs/upgrade-storage.md) **before** upgrading. The old data may be unrecoverable afterwards.
+
+## Dots and local MCP temporarily unavailable
+
+This release temporarily excludes Pi Console's Dots and MCP integrations (local resume, folders, Pi control and readonly). Connection settings, MCP endpoints and the `local-resume` CLI are unavailable; previous environment variables or stored settings do not re-enable them. Implementation code and saved configuration are preserved for later work.
+
+Normal Pi sessions and Pi's own MCP extension, Chat, Execution, voice input and remote connections remain available. `owner-login` remains for local identity verification used by voice settings and other non-MCP management. Dots/local-MCP design and verification documents are historical development records, not activation instructions for this release.
 
 ## Quick start
 
@@ -37,5 +43,6 @@ Fio (artwork attribution: DOLL Project / Ludi) is bundled in `package/pets/fio/`
 | Safely upgrade an older installation | [Pre-upgrade backup and migration](docs/upgrade-storage.md) |
 | Configure protected remote access | [Cloudflare Tunnel + Access](docs/cloudflare-access.md) |
 | Explore internals | [Architecture documents](docs/operations.en.md#architecture) |
+| See what changed in this release | [0.5.4 release notes](docs/releases/0.5.4.en.md) |
 
 Source code is under the [MIT License](LICENSE). See [distribution notes](docs/operations.en.md#license-and-distribution) for dependency and artwork rights.

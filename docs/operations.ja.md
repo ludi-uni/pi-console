@@ -4,7 +4,7 @@
 
 ## 導入方法
 
-Node.js 24 以降と互換性のある Pi SDK（安定版 0.99.2〜1.4.0。最新版で検証済み。中間バージョンは許可するが個別の実行確認は未実施）が必要です。[公開版の簡単な導入](../README.md#すぐに使う)のほか、ソースの作業ツリーを Pi パッケージとして登録できます。
+Node.js 24 以降と互換性のある Pi SDK（安定版 0.99.2〜1.5.0。1.5.0 と 1.4.0 の初期化・拡張連携・履歴取得、1.5.0 のパッケージ導入・起動・停止をモデル呼び出しなしで検証。範囲内を対応対象とするが全バージョンの個別実行確認は未実施）が必要です。[公開版の簡単な導入](../README.md#すぐに使う)のほか、ソースの作業ツリーを Pi パッケージとして登録できます。
 
 ```powershell
 npm install
@@ -130,4 +130,4 @@ node --import tsx --test tests/real-kit-decisions.test.mjs
 
 Pi Console のソースコードは [MIT License](../LICENSE) です。実行時依存関係のライセンスと著作権表示は [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) にあり、画面の Settings → About the app からも参照できます。Pi CLI は別途導入が必要です。ペットの画像は別のパッケージから読み込まれ、このプロジェクトのライセンスには含まれません。改変版の配布前に依存関係と追加した画像の権利を確認してください。
 
-公開版は [`@ludi-uni/pi-console`](https://www.npmjs.com/package/@ludi-uni/pi-console) です。ローカルで配布用 tarball の内容を確認するには `npm pack --dry-run` を使い、必要なら `npm pack` します。`prepack` がブラウザー用ファイルをビルドします。利用者には互換性のある Pi CLI と Node.js/npm による実行時依存関係が必要です。認証のないループバックサーバーを直接公開しないでください。
+公開版は [`@ludi-uni/pi-console`](https://www.npmjs.com/package/@ludi-uni/pi-console) です。npm パッケージ内の資料は、`docs/` 直下の Markdown、画面例の画像（`docs/images/`）、リリースノート（`docs/releases/*.md`）に限定します。設計資料の Markdown は履歴として残しますが、開発中の検証用アーカイブ・ログ・スクリプト・JSON 証跡などはディスクに保持したまま配布対象から外します。ローカルで配布用 tarball の内容を確認するには `npm pack --dry-run` を使い、必要なら `npm pack` します。`prepack` がブラウザー用ファイルをビルドします。利用者には互換性のある Pi CLI と Node.js/npm による実行時依存関係が必要です。認証のないループバックサーバーを直接公開しないでください。

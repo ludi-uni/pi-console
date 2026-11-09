@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +58,7 @@ test('installed local Pi package exposes /pi-console and connects a real isolate
       try { page = await fetch(base + '/'); if (page.ok) break; } catch {}
       await new Promise(resolve => setTimeout(resolve, 80));
     }
-    assert.equal(page?.status, 200, `package server not available: ${stderr}`);
+    assert.equal(page?.status, 200, `package server not available: ${stderr}\n${await readFile(join(root, 'data', 'server.log'), 'utf8').catch(() => 'No managed-server log was created.')}`);
     assert.match(await page.text(), /assets\/index-/);
     const post = async (route, data) => {
       const res = await fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });

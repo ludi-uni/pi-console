@@ -311,23 +311,26 @@ for (const width of [390, 320]) {
     await page.route('**/api/workspaces/update', route => route.fulfill({ json: { workspace: { ...workspace, name: workspaceName } } }));
     await page.route('**/api/sessions?*', route => route.fulfill({ json: { sessions: sessions.map(s => s.id === 'A' ? { ...s, name: title } : s) } }));
     await openA(page, true);
-    const heading = page.getByRole('heading', { name: title, exact: true });
-    await expect(heading).toHaveCount(1);
-    await expect(page.locator('.chat-heading h2')).toBeVisible();
-    await expect(page.locator('.session-toolbar-context h2')).not.toBeVisible();
+    // The title exists exactly once, inside the session toolbar (the legacy
+    // .chat-heading is hidden on compact viewports).
+    const toolbarHeading = page.locator('.session-toolbar-context h2', { hasText: title });
+    await expect(toolbarHeading).toHaveCount(1);
+    await expect(toolbarHeading).toBeVisible();
+    await expect(page.locator('.chat-heading h2')).not.toBeVisible();
     await expect(page.locator('.workspace-context')).toHaveText(workspaceName);
     await expect(page.locator('.workspace-context')).toHaveAttribute('title', workspaceName);
     await expect(page.getByRole('button', { name: 'Switch session', exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await page.getByRole('button', { name: /^Execution/ }).click();
-    await expect(heading).toHaveCount(1); await expect(page.locator('.session-toolbar-context h2')).toBeVisible();
+    await expect(toolbarHeading).toHaveCount(1); await expect(page.locator('.session-toolbar-context h2')).toBeVisible();
     await expect(page.locator('.workspace-context')).toHaveText(workspaceName);
     await page.getByRole('button', { name: '← Chat', exact: true }).click();
-    await expect(heading).toHaveCount(1);
+    await expect(toolbarHeading).toHaveCount(1);
     await page.setViewportSize({ width: 844, height: 390 });
     await expect(page.locator('.chat-heading h2')).not.toBeVisible();
     await expect(page.locator('.session-toolbar-context h2')).toBeVisible();
-    await expect(heading).toHaveCount(1);
+    await expect(page.locator('.session-toolbar-context h2')).toContainText(title);
+    await expect(toolbarHeading).toHaveCount(1);
     await expect(page.getByRole('status', { name: 'Current conversation status' })).toBeVisible();
     await page.getByLabel('Conversation status details').click();
     const details = (await page.locator('.conversation-status-body').boundingBox())!;
@@ -343,7 +346,7 @@ for (const width of [390, 320]) {
     await expect(page.getByRole('heading', { name: 'Chat B', exact: true })).toHaveCount(1);
     await page.getByRole('button', { name: '← Sessions', exact: true }).click();
     await page.getByLabel('Session list').getByRole('button', { name: /^Chat A/ }).click();
-    await expect(heading).toHaveCount(1);
+    await expect(toolbarHeading).toHaveCount(1);
     await expect(page.getByRole('status', { name: 'Current conversation status' })).toHaveText('Sending');
     await expect(page.getByRole('button', { name: /^Send/ })).toBeDisabled();
     await pending[0].fulfill({ json: { runId: 'run-A' } });

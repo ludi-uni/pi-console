@@ -52,9 +52,28 @@ export async function createLocalMcpComposition(options={}){
    if(prior){if(prior.name!==body.name||!equal(prior.proofHash,hash(body.proof)))fail('enrollment_request_mismatch');if(prior.cancelled)return{state:'cancelled',connectionId:prior.reply.connectionId};if(prior.reply.expiresAt<=now())fail('enrollment_expired');return copy(prior.reply)}
    const stored=new Set(savedViews.map(c=>c.connectionId));if(savedViews.length+app.view().connections.filter(c=>!stored.has(c.connectionId)&&c.state==='pending').length>=16)fail('connection_request_rejected');
    if(recoverable&&enrollments.size>=256)fail('enrollment_capacity');if(recoverable)issuer.reserve([body.proof]);const r=app.request({name:body.name});pending.set(r.connectionId,{name:body.name,clientId:body.clientId,ownerProofHash:hash(r.proof)});if(id)enrollments.set(id,{name:body.name,proofHash:hash(body.proof),reply:copy(r),cancelled:false});return r},
-  review(body,check){return queue(async()=>{check();if(!exact(body,['connectionId','parent','operations','period'])||!pending.has(body.connectionId)||![7,31,'none'].includes(body.period))fail('invalid_review');const approvedAt=now(),r=await app.review({connectionId:body.connectionId,parent:body.parent,operations:body.operations,expiresAt:body.period==='none'?null:approvedAt+body.period*DAY,...(body.period==='none'?{noExpiry:true}:{})});check();const review={...r,approvedAt,period:body.period,fingerprint:hash(JSON.stringify(r))};reviews.set(r.reviewId,review);return copy(r)})},
+  review(body,check){return queue(async()=>{check();if(!exact(body,['connectionId','parent','operations','period'])||!pending.has(body.connectionId)||![7,31,'none'].includes(body.period))fail('invalid_review');const approvedAt=now(),r=await app.review({connectionId:body.connectionId,parent:body.parent,operations:body.operations,expiresAt:body.period==='none'?null:approvedAt+body.period*DAY,...(body.period==='none'?{noExpiry:true}:{})});check();
+   // FolderMcp.review already invalidated an earlier review for the same
+   // pending connection; drop the replaced outer entry only after the new
+   // review exists so a failed review leaves the previous review cancelable.
+   for(const[id,v]of reviews)if(v.connectionId===body.connectionId&&id!==r.reviewId)reviews.delete(id);
+   const review={...r,approvedAt,period:body.period,fingerprint:hash(JSON.stringify(r))};reviews.set(r.reviewId,review);return copy(r)})},
   approve(body,check,ownerExpiresAt){return queue(async()=>{check();if(!Number.isSafeInteger(ownerExpiresAt)||ownerExpiresAt<=now())fail('authenticated_owner_expiry_required');const review=reviews.get(body?.reviewId);if(!review)fail('review_unavailable');const d=await read();if(d.requests.some(r=>r.id===body.requestId))fail('request_already_recorded');if(d.requests.length>=256||d.families.length>=16)fail('request_capacity');const liveOwner=()=>{check();if(ownerExpiresAt<=now())fail('authenticated_owner_expiry_required')};context={review,check:liveOwner};try{const result=await app.approve(body,liveOwner,ownerExpiresAt);liveOwner();return result}finally{context=undefined;reviews.delete(body?.reviewId)}})},
   cancel(reviewId,check){return queue(async()=>{check();const result=await app.cancel(reviewId);reviews.delete(reviewId);return result})},
+  // Approve-response recovery, serialized inside the same queue as approve().
+  // If a delayed approve already committed, report committed; otherwise the
+  // review is invalidated so a late approve can never succeed afterwards, and
+  // the caller gets a definite not_committed — never an unconditional clear.
+  // A requestId/reviewId pair that does not match one live review is a
+  // mismatch, not a success: it must never report not_committed while the real
+  // review can still be approved.
+  recover(body,check){return queue(async()=>{check();if(!exact(body,['requestId','reviewId'])||!identifier(body.requestId)||!identifier(body.reviewId))fail('invalid_recover');const r=(await read()).requests.find(r=>r.id===body.requestId);check();if(r)return{state:'committed',requestId:body.requestId,action:r.action,current:view()};const review=reviews.get(body.reviewId);if(review&&review.requestId!==body.requestId||[...reviews.values()].some(v=>v.requestId===body.requestId&&v.reviewId!==body.reviewId))fail('recover_binding_mismatch');
+   // abandon() serializes against inner approval and records cancellation even
+   // when a replaced/expired review or a restart left no matching inner entry.
+   // Unknown is never simply cleared: a late approval must be made impossible.
+   const internal=await app.abandon(body.requestId,check);check();
+   if(internal.state!=='cancelled')fail('recover_outcome_unknown');
+   reviews.delete(body.reviewId);return{state:'not_committed',requestId:body.requestId,current:view()}})},
   claim(body){return queue(async()=>{
    const result=app.claim(body);if(result.state!=='connected')return result;
    const f=family(await read(),body.connectionId);

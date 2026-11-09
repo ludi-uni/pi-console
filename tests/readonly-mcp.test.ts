@@ -370,7 +370,7 @@ test('session directory scan is bounded and reports truncation', async () => {
   } finally { await f.close(); }
 });
 
-test('real HTTP entry closes legacy opt-in without isolation; spoofed ready flags cannot bypass browser auth', { timeout: 30000 }, async () => {
+test('release HTTP entry excludes legacy MCP opt-ins; spoofed ready flags cannot bypass browser auth', { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-readonly-http-'));
   try {
     await mkdir(join(root,'sessions'));
@@ -400,11 +400,14 @@ test('real HTTP entry closes legacy opt-in without isolation; spoofed ready flag
         if(authenticated)requestHeaders['x-forwarded-for']='192.0.2.1';
         const response = await fetch(base+'/mcp/readonly',{method:'POST',headers:requestHeaders,
           body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'get_status',arguments:{}}})});
-        assert.equal(response.status,503);
-        assert.deepEqual(await response.json(),{error:'external_mcp_disabled',reason:'adapter_unavailable'});
+        // Console-hosted MCP is excluded from this release, not advertised as
+        // an installed adapter waiting for activation. Env/key/proxy hints do
+        // not reopen it; normal browser authentication remains independent.
+        assert.equal(response.status,404);
+        assert.equal(await response.text(),'');
         for(const path of ['/mcp','/mcp/dots','/mcp/control','/.well-known/oauth-protected-resource/mcp/readonly','/.well-known/oauth-protected-resource']) {
-          assert.equal((await fetch(base+path,{headers:authHeaders})).status,503);
-          assert.equal((await fetch(base+path,{headers:{origin:base}})).status,503);
+          assert.equal((await fetch(base+path,{headers:authHeaders})).status,404);
+          assert.equal((await fetch(base+path,{headers:{origin:base}})).status,404);
         }
         assert.equal((await fetch(base+'/api/workspaces',{headers:authHeaders})).status,403);
         const protectedStatus = await new Promise<number | undefined>((resolve,reject) => {

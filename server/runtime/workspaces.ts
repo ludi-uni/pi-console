@@ -79,16 +79,60 @@ export class WorkspaceStore {
   }
 }
 export function piSessionDir(): string { return process.env.PI_CODING_AGENT_SESSION_DIR ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'sessions'); }
+
+// Cached session metadata is keyed by a stat signature covering identity (dev/ino),
+// size and timestamp granularity; any change, replace or rename forces a re-read.
+// Only successful reads are cached: failed or malformed files are re-read every
+// call, so a transient failure never becomes a stale negative entry.
+type SessionSignature = { dev: number; ino: number | bigint; size: number; mtimeMs: number; ctimeMs: number };
+type SessionMeta = { signature: SessionSignature; id: string; name?: string; cwd: string };
+const sessionMetaCache = new Map<string, SessionMeta>();
+const SESSION_META_CACHE_LIMIT = 2048;
+const SESSION_META_ENTRY_BYTES = 8192;
+function statSignature(stat: { dev: number; ino: number | bigint; size: number; mtimeMs: number; ctimeMs: number }): SessionSignature {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+}
+function sameSignature(a: SessionSignature, b: SessionSignature): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+}
+function rememberSessionMeta(path: string, meta: SessionMeta): void {
+  sessionMetaCache.delete(path);
+  // Do not let unusually large custom names/headers turn a metadata cache into
+  // another copy of session content. Oversize entries remain readable uncached.
+  if(Buffer.byteLength(path)+Buffer.byteLength(meta.id)+Buffer.byteLength(meta.cwd)+Buffer.byteLength(meta.name??'')>SESSION_META_ENTRY_BYTES)return;
+  sessionMetaCache.set(path, meta); // fresh entries land at the end
+  while (sessionMetaCache.size > SESSION_META_CACHE_LIMIT) sessionMetaCache.delete(sessionMetaCache.keys().next().value as string);
+}
 export async function readSession(path: string, workspace: Workspace): Promise<SessionInfo | undefined> {
+  let stat;
+  try { stat = await fs.stat(path); if (!stat.isFile()) { sessionMetaCache.delete(path); return; } } catch { sessionMetaCache.delete(path); return; }
+  let meta = sessionMetaCache.get(path);
+  if (!meta || !sameSignature(meta.signature, statSignature(stat))) {
+    meta = await readSessionMeta(path, stat);
+    // Stat again after the reads: a file changed mid-read is returned once but
+    // never cached, so the next poll re-reads a consistent snapshot.
+    const after = await fs.stat(path).catch(() => undefined);
+    if (!meta || !after || !sameSignature(meta.signature, statSignature(after))) sessionMetaCache.delete(path);
+    else rememberSessionMeta(path, meta);
+    if (!after) return;
+    stat = after;
+  }
+  if (!meta) return;
+  // Workspace membership is re-verified on every call so a symlink retarget or a
+  // workspace-path update can never widen the boundary through cached metadata.
+  const cwd = await fs.realpath(meta.cwd).catch(() => meta.cwd);
+  if (pathKey(cwd) !== pathKey(workspace.path)) return;
+  // A fresh object per call: callers may freely mutate or extend it without
+  // touching the cached metadata, which only holds immutable primitives.
+  return { id: meta.id, workspaceId: workspace.id, filePath: path, name: meta.name, updatedAt: stat.mtime.toISOString() };
+}
+async function readSessionMeta(path: string, stat: SessionSignature): Promise<SessionMeta | undefined> {
   let handle;
   try {
     handle = await fs.open(path, 'r'); const buffer = Buffer.alloc(131072); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     const line = buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0];
     const header = JSON.parse(line);
     if (header.type !== 'session' || typeof header.id !== 'string' || typeof header.cwd !== 'string') return;
-    const cwd = await fs.realpath(header.cwd).catch(() => header.cwd);
-    if (pathKey(cwd) !== pathKey(workspace.path)) return;
-    const stat = await fs.stat(path);
     const first=buffer.subarray(0,bytesRead).toString('utf8').split('\n');
     let firstPrompt='';
     for (const line of first.slice(1)) { try { const entry=JSON.parse(line); if(entry.type==='message'&&entry.message?.role==='user') { const content=entry.message.content; firstPrompt=typeof content==='string'?content:Array.isArray(content)?content.filter((v:any)=>v.type==='text').map((v:any)=>v.text).join(' '):'';break; } } catch {} }
@@ -99,7 +143,7 @@ export async function readSession(path: string, workspace: Workspace): Promise<S
     // attachment names, never file bodies.
     const split=splitPromptAttachments(firstPrompt);
     const fallback=(split.text+(split.attachments.length?` 📎 ${split.attachments.map(a=>a.name).join(', ')}`:'')).replace(/\s+/g,' ').trim().slice(0,72);
-    return { id: header.id, workspaceId: workspace.id, filePath: path, name:name||fallback||undefined, updatedAt: stat.mtime.toISOString() };
+    return { signature: statSignature(stat), id: header.id, cwd: header.cwd, name: name||fallback||undefined };
   } catch { return; } finally { await handle?.close(); }
 }
 export async function listSessions(workspace: Workspace, root = piSessionDir()): Promise<SessionInfo[]> {

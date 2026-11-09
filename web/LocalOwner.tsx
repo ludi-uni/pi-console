@@ -3,6 +3,8 @@ import WorkspacePermissions from './WorkspacePermissions.tsx';
 import LocalResumeMcp from './LocalResumeMcp.tsx';
 import OwnerRegistration from './OwnerRegistration.tsx';
 import FioConnection from './FioConnection.tsx';
+import SettingsSpeech from './SettingsSpeech.tsx';
+import { MCP_RELEASE_ENABLED } from '../shared/release-availability.mjs';
 import './local-owner.css';
 export default function LocalOwner() {
   const [authenticated, setAuthenticated] = useState(false), [code, setCode] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [status, setStatus] = useState<any>(), [advanced, setAdvanced] = useState(false);
@@ -17,10 +19,11 @@ export default function LocalOwner() {
       <p role="status">本人確認済み / {new Date(status.expiresAt).toLocaleString()} まで</p>
       <button disabled={busy} onClick={() => void run(async () => { await request('auth/logout', {}); setAuthenticated(false); setCode(''); setAdvanced(false); })}>本人管理からログアウト</button>
       <OwnerRegistration/>
-      <LocalResumeMcp available={status.resumeAvailable===true} ownerExpiresAt={status.expiresAt}/>
-      <FioConnection/>
-      <button onClick={() => setAdvanced(!advanced)}>{advanced ? '既存の個別権限を閉じる' : '既存の exact read/control/final 権限を見る'}</button>
-      {advanced && <WorkspacePermissions ja={true} apiPrefix="/local-owner/api/"/>}
+      {MCP_RELEASE_ENABLED===true&&<LocalResumeMcp available={status.resumeAvailable===true} ownerExpiresAt={status.expiresAt} ja={true}/>}
+      <SettingsSpeech owner={true} ownerExpiresAt={status.expiresAt} ja={true}/>
+      {MCP_RELEASE_ENABLED===true&&<FioConnection/>}
+      {MCP_RELEASE_ENABLED===true&&<button onClick={() => setAdvanced(!advanced)}>{advanced ? '既存の個別権限を閉じる' : '既存の exact read/control/final 権限を見る'}</button>}
+      {MCP_RELEASE_ENABLED===true&&advanced && <WorkspacePermissions ja={true} apiPrefix="/local-owner/api/"/>}
     </>}
   </main>;
 }

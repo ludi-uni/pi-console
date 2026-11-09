@@ -5,6 +5,7 @@ import { request } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {createPiControlCompanion} from './pi-control-mcp.mjs';
+import { MCP_RELEASE_ENABLED } from '../shared/release-availability.mjs';
 
 export function ownerOrigin(value) {
   const u = new URL(value);
@@ -196,4 +197,9 @@ async function main() {
   });
   input.once('close', () => session.close());
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { process.stderr.write('Local MCP requires the verified literal loopback owner address.\n'); process.exitCode = 1; });
+// Gate the executable entry only: direct stdio invocation cannot reopen the
+// release boundary; the exported session helpers stay usable in tests.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (MCP_RELEASE_ENABLED !== true) { process.stderr.write('Local MCP is not available in this release.\n'); process.exitCode = 1; }
+  else main().catch(() => { process.stderr.write('Local MCP requires the verified literal loopback owner address.\n'); process.exitCode = 1; });
+}

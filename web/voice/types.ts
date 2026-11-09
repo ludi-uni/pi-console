@@ -121,6 +121,12 @@ export interface STTSessionEvents {
   onTranscript?(transcript: Transcript): void;
   /** Provider finished gracefully after stop(), or ended on its own. */
   onEnd?(): void;
+  /**
+   * Batch providers: capture ended and server-side transcription is running.
+   * Lets the UI leave the stop-grace window — processing is still cancelable
+   * through abort(), and re-recording stays locked until onEnd/onError.
+   */
+  onProcessing?(): void;
   onError?(error: VoiceError): void;
 }
 

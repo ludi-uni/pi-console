@@ -3,7 +3,7 @@ export type EventType = 'RunStarted' | 'RunCompleted' | 'RunFailed' | 'MessageSt
 export type ExecutionNodeKind = 'run' | 'orchestrator' | 'task' | 'agent' | 'tool' | 'decision';
 export type ExecutionStatus = 'queued' | 'running' | 'waiting' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown';
 export interface ExecutionNode { id: string; kind: ExecutionNodeKind; label: string; status: ExecutionStatus; parentId?: string; correlation: 'explicit' | 'derived-safe' | 'unknown'; sourceKind: 'pi' | 'pi-subagents' | 'orchestrator'; nativeId?: string; startedAt?: string; updatedAt: string; endedAt?: string; action?: string; attempt?: number; model?: string; provider?: string; dependencies?: string[]; blockedReason?: string; attempts?: { attempt: number; model?: string; failureClass?: string }[]; details?: Record<string, string | number | boolean | null> }
-export interface ExecutionStateSnapshot { nodes: ExecutionNode[]; roots: string[]; unattached: string[]; rows: { node: ExecutionNode; depth: number; unattached: boolean }[]; activeCount: number; failedCount: number; decisionCount: number };
+export interface ExecutionStateSnapshot { nodes: ExecutionNode[]; roots: string[]; unattached: string[]; rows: { node: ExecutionNode; depth: number; unattached: boolean }[]; activeCount: number; failedCount: number; decisionCount: number; truncated?: boolean };
 export interface ExecutionEvent {
   schemaVersion: 1; eventId: string; seq: number; timestamp: string;
   // Server-side run identity for this session's event stream. `seq` restarts at 0 on
@@ -35,4 +35,8 @@ export interface QueuedItem { id: string; message: string; revision: number; att
 // included — file is owner-read only). Wrappers are regenerated via prepareAttachments
 // on edit and dispatch so marker formats never go stale.
 export interface StoredQueueItem { id: string; text: string; attachments: PromptAttachment[]; queuedAt: string; revision: number; status: QueueItemStatus; error?: string }
-export interface Snapshot { session: SessionInfo; runtime: ProcessState; activeRunId?: string; chat: ChatMessage[]; events: ExecutionEvent[]; execution: ExecutionStateSnapshot; queue?: QueuedItem[]; queueHeld?: boolean; seq: number; generation: string }
+export interface Snapshot { session: SessionInfo; runtime: ProcessState; activeRunId?: string; chat: ChatMessage[]; events: ExecutionEvent[]; execution: ExecutionStateSnapshot; queue?: QueuedItem[]; queueHeld?: boolean; seq: number; generation: string;
+  // Bounded in-memory chat window: when set, older projected messages were evicted
+  // from memory only — the persisted Pi transcript is untouched and the evicted
+  // window stays readable via GET /api/session/chat/history?before=<chatEarlierCount>.
+  chatTruncated?: boolean; chatEarlierCount?: number }

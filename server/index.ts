@@ -15,7 +15,9 @@ import {openWorkspaceMedia,mediaRange} from './runtime/workspace-media.ts';
 import { accessConfig, allowedHost, allowedPost, createAccessPrincipalVerifier, accessToken, type VerifiedAccessPrincipal } from './access.ts';
 import { readJsonBody } from './body.ts';
 import { PromptReceipts } from './runtime/prompt-receipts.ts';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
+import {HtmlPreviewService,createHtmlPreviewHttp} from './html-preview.ts';
+import {HTML_PREVIEW_SHELL_CSP} from '../shared/html-preview.ts';
 import { createReadOnlyMcp, readOnlyMcpEnabled } from './readonly-mcp.ts';
 import { loadReadOnlyMcpScope } from './readonly-mcp-scope.ts';
 import { loadReadOnlyMcpAuthentication } from './readonly-mcp-auth.ts';
@@ -27,6 +29,7 @@ import {createTrustedLocalMcp,denyPublicMcp,startTrustedLocalListener,trustedLoc
 import {createLocalMcpOwner} from './local-mcp-owner.ts';
 import {createLocalOwnerBootstrap} from './local-owner-bootstrap.ts';
 import {loadLocalFolderMcp} from './local-folder-composition.ts';
+import {FolderMcp} from './folder-mcp.ts';
 import {createSettingsMcp} from './settings-mcp.ts';
 import {ownerFileStore} from './settings-owner.ts';
 import {verifyManagedOwnerServer} from '../package/server-manager.mjs';
@@ -36,31 +39,62 @@ import {createLocalMcpInstallation} from './local-mcp-installation.mjs';
 import {createManagedResumeOpen} from './managed-resume-open.ts';
 import {createPiControlComposition} from './pi-control-composition.ts';
 import {piControlHttp} from './pi-control-http.ts';
+import {SpeechCppService} from './speech-cpp.ts';
+import {createSpeechHttp} from './speech-http.ts';
+import {createSpeechSetup, speechSetupCsp} from './speech-setup.ts';
+import {SpeechOnboardingBroker} from './speech-onboarding.ts';
+import {createSpeechOnboardingHttp} from './speech-onboarding-http.ts';
+import {createWindowsSpeechApprovalDialog} from '../package/speech-approval-dialog.mjs';
+import {createRemoteDesktop} from './remote-desktop/composition.ts';
+import {MCP_RELEASE_ENABLED} from '../shared/release-availability.mjs';
 
 const dataDir = process.env.PI_CONSOLE_DATA_DIR ?? join(process.cwd(), '.pi-console');
-const assetsDir = fileURLToPath(new URL('../dist/', import.meta.url));
+const assetsDir = process.env.PI_CONSOLE_ASSETS_DIR ?? fileURLToPath(new URL('../dist/', import.meta.url));
+const htmlPreviewShellHeaders={'content-security-policy':HTML_PREVIEW_SHELL_CSP,'cache-control':'no-store','x-dns-prefetch-control':'off','permissions-policy':'camera=(), microphone=(), geolocation=(), autoplay=()'};
 const store = new WorkspaceStore(join(dataDir, 'workspaces.json'));
 await store.load();
 const access = accessConfig(process.env);
 const workspacePermissions = new WorkspacePermissions(join(dataDir,'workspace-permissions.json'));
-const mcpEnabled = readOnlyMcpEnabled(process.env.PI_CONSOLE_READONLY_MCP);
+// Release boundary: every console-hosted MCP lane is off for this release and no
+// environment opt-in can reopen it (the gate short-circuits before env/file reads).
+const mcpEnabled = MCP_RELEASE_ENABLED === true && readOnlyMcpEnabled(process.env.PI_CONSOLE_READONLY_MCP);
 const mcpScope = mcpEnabled ? await loadReadOnlyMcpScope(join(dataDir,'readonly-mcp-scope.json')) : undefined;
 const mcpAuthentication = mcpEnabled ? await loadReadOnlyMcpAuthentication(process.env, dataDir) : undefined;
 const manageToken = process.env.PI_CONSOLE_MANAGEMENT_TOKEN;
 const manageNonce = randomBytes(16).toString('hex');
 const knownLegacyKeys:string[]=[mcpAuthentication?.key,process.env.PI_CONSOLE_CONTROL_MCP_KEY].filter((key):key is string=>typeof key==='string'&&/^[0-9a-f]{64}$/.test(key));
-// Fixed installed descriptor defaults OFF; explicit reviewed binding enables only this management provider.
-const {folders:localFolders,provider:localFolderProvider} = await loadLocalFolderMcp(store);
+// An excluded integration must not load its installed descriptor/native binding:
+// stale or incompatible MCP binaries must never prevent the console from booting.
+const {folders:localFolders,provider:localFolderProvider} = MCP_RELEASE_ENABLED===true
+  ? await loadLocalFolderMcp(store)
+  : {folders:new FolderMcp(undefined),provider:undefined};
 // Installed feature gate remains OFF. No profile migration or credential creation.
 let reservedLocalProfileKeys:string[]=[],reservedLocalProfileAvailable=true;
-const localResume=createLocalMcpInstallation({enabled:true,authorizedOS:true,dataDir,provider:localFolderProvider,reserved:()=>{if(!reservedLocalProfileAvailable)throw Error('credential_separation_unknown');return [...knownLegacyKeys,...reservedLocalProfileKeys]},readOwnerBinding:()=>{const v=settingsMcp.owners.localView();if(!v.available||v.recordState==='revoked')throw Error('registered_owner_unavailable');return v.recordState==='registered'?{owner:v.owner,requestId:v.recordRequestId}:'local-only'}});
-const localOwnerBootstrap=createLocalOwnerBootstrap({consolePort:Number(process.env.PORT ?? 31717),folders:localFolders,settings:(req,res)=>settingsMcp.handleLocal(req,res),control:(req,res)=>controlHttp(req,res),enabled:!!manageToken,managementToken:manageToken,nonce:manageNonce,resume:localResume,profileFile:join(dataDir,'trusted-local-credentials.json'),legacyKeys:knownLegacyKeys,assetsRoot:assetsDir,delegate:async(req,res)=>await trustedLocal!.handleOwner(req,res)||await trustedLocal!.handleOwnerScope(req,res)||await finalOwner.owner(req,res)});
+const localResume=createLocalMcpInstallation({enabled:MCP_RELEASE_ENABLED===true,authorizedOS:true,dataDir,provider:localFolderProvider,reserved:()=>{if(!reservedLocalProfileAvailable)throw Error('credential_separation_unknown');return [...knownLegacyKeys,...reservedLocalProfileKeys]},readOwnerBinding:()=>{const v=settingsMcp.owners.localView();if(!v.available||v.recordState==='revoked')throw Error('registered_owner_unavailable');return v.recordState==='registered'?{owner:v.owner,requestId:v.recordRequestId}:'local-only'}});
+// speech.cpp STT: metadata load only — no download, spawn or directory writes at boot.
+const speechService=new SpeechCppService({dataDir});
+await speechService.load();
+const speechHttp=createSpeechHttp({service:speechService,authorize:req=>localOwnerBootstrap.authorize(req),ownerExpiry:req=>localOwnerBootstrap.expiresAt(req)});
+// Same-device routing: a per-process nonsecret instanceId lets the Settings tab
+// prove it is on the Console PC before being handed the loopback landing.
+const speechSetup=createSpeechSetup({port:Number(process.env.PORT ?? 31717),assetsRoot:assetsDir,publicStatus:()=>speechService.publicStatus(),publicOrigin:access?.origin});
+// Terminal-free onboarding: purpose-scoped native approval only — never the
+// owner/admin grant. The broker's dialog/identity seams are the same trusted
+// composition as the owner GUI but a separate script, view and effect.
+const speechOnboarding=new SpeechOnboardingBroker({service:speechService,managed:{available:!!manageToken&&process.platform==='win32',generation:()=>({pid:process.pid,startedAt,port:Number(process.env.PORT ?? 31717),generation:manageNonce}),verifyIdentity:expected=>verifyManagedOwnerServer({expected})},dialog:createWindowsSpeechApprovalDialog()});
+const speechOnboardingHttp=createSpeechOnboardingHttp({broker:speechOnboarding,port:Number(process.env.PORT ?? 31717),publicOrigin:access?.origin,principal:req=>accessPrincipals.get(req)});
+const localOwnerBootstrap=createLocalOwnerBootstrap({consolePort:Number(process.env.PORT ?? 31717),settings:(req,res)=>settingsMcp.handleLocal(req,res),voice:(req,res)=>speechHttp.handleOwner(req,res),enabled:!!manageToken,managementToken:manageToken,nonce:manageNonce,profileFile:join(dataDir,'trusted-local-credentials.json'),legacyKeys:knownLegacyKeys,assetsRoot:assetsDir,credentials:MCP_RELEASE_ENABLED===true,...(MCP_RELEASE_ENABLED===true?{folders:localFolders,control:(req:IncomingMessage,res:ServerResponse)=>controlHttp(req,res),resume:localResume,delegate:async(req:IncomingMessage,res:ServerResponse)=>await trustedLocal!.handleOwner(req,res)||await trustedLocal!.handleOwnerScope(req,res)||await finalOwner.owner(req,res)}:{})});
 // Credential provisioning never enables MCP or grants a scope. Default remains OFF.
 const trustedLocalConfig:TrustedLocalMcpConfig={enabled:false};
 trustedLocalConfig.legacyCredentialKeys=knownLegacyKeys;
 try{const profile=await localOwnerBootstrap.profile.read();if(profile)reservedLocalProfileKeys=[profile.credentials.read,profile.credentials.control,profile.credentials.final];if(profile&&profile.credentials.expiresAt>Date.now())trustedLocalConfig.credentials={...profile.credentials};}catch{reservedLocalProfileAvailable=false;console.warn('trusted_local_credentials_unavailable');}
 trustedLocalConfig.owner={mode:'local-session',verify:localOwnerBootstrap.verify};
 const accessPrincipals=new WeakMap<IncomingMessage,VerifiedAccessPrincipal>();
+const htmlPreviewHttp=createHtmlPreviewHttp({service:new HtmlPreviewService({store}),identity:req=>{
+  if(!access)return{id:'local'};
+  const principal=accessPrincipals.get(req);
+  return principal?{id:createHash('sha256').update(JSON.stringify([principal.issuer,principal.audience,principal.subject])).digest('hex'),expiresAt:principal.expiresAt}:undefined;
+}});
 let trustedLocal:ReturnType<typeof createTrustedLocalMcp>|undefined;
 let localListener:ReturnType<typeof createServer>|undefined;
 const localOwner=createLocalMcpOwner(trustedLocalConfig.owner,()=>trustedLocal?.status().enabled===true);
@@ -68,12 +102,20 @@ const localOwner=createLocalMcpOwner(trustedLocalConfig.owner,()=>trustedLocal?.
 // Source opt-in composition is shared with isolated acceptance; deployment is separate approval.
 const finalOwner = createFinalOwnerComposition(store,workspacePermissions,{reportRecoveryDir:join(dataDir,'report-recovery'),queueDir:join(dataDir,'queue'),journalDir:join(dataDir,'final-answers'),orchestratorHistoryDir:join(dataDir,'orchestrator-history')},{enabled:trustedLocalConfig.enabled===true&&trustedLocalConfigured(trustedLocalConfig),accessMode:access?'access':'local',authentication:trustedLocalConfig.credentials?{mode:'shared_secret',key:trustedLocalConfig.credentials.final}:undefined,legacyCredentialKeys:trustedLocalConfig.legacyCredentialKeys? [...trustedLocalConfig.legacyCredentialKeys,...(trustedLocalConfig.credentials?[trustedLocalConfig.credentials.read,trustedLocalConfig.credentials.control]:[])]:undefined,ownerRequest:localOwner.verify});
 const runtime = finalOwner.runtime;
+runtime.startIdleEviction();
 const promptReceipts = new PromptReceipts(join(dataDir, 'prompt-receipts'));
 const recycling = new SessionRecycling(join(dataDir,'session-retention.json'),runtime);
 await recycling.load();
 const port = Number(process.env.PORT ?? 31717);
+const remoteDesktop=await createRemoteDesktop({dataDir,port,origin:access?.origin,authorize:access?req=>settingsMcp.owners.fresh(accessPrincipals.get(req))&&settingsMcp.owners.owns(accessPrincipals.get(req)):undefined,onEnabled:invoke=>runtime.setRemoteDesktopBroker(invoke)});
 const tunnelLauncher=createWindowsTunnelLauncher();
-const settingsMcp = await createSettingsMcp({resumeRevokeOwner:async(requestId,check)=>localResume.revokeOwner(requestId,check),store:ownerFileStore(join(dataDir,'settings-owner.json')),access,principal:req=>accessPrincipals.get(req),localVerify:localOwnerBootstrap.verify,localExpiry:localOwnerBootstrap.expiresAt,folders:localFolders,startBroker:()=>localOwnerBootstrap.startBroker(),broker:localOwnerBootstrap.status,consolePort:port,piControl:()=>piControl,ownerGui:{available:!!manageToken&&process.platform==='win32',generation:()=>({pid:process.pid,startedAt,port,generation:manageNonce}),verifyIdentity:expected=>verifyManagedOwnerServer({expected}),dialog:createWindowsOwnerDialog()},tunnel:{available:!!manageToken&&process.platform==='win32',generation:()=>({pid:process.pid,startedAt,port,generation:manageNonce}),verifyIdentity:expected=>verifyManagedOwnerServer({expected}),launch:tunnelLauncher,verifyConnection:tunnelLauncher.verifyConnection}});
+const mcpLaneRoute=(req:IncomingMessage)=>{
+  const url=req.url??'';
+  if(!url.startsWith('/api/settings-local-mcp/'))return false;
+  const route=url.slice('/api/settings-local-mcp/'.length).split('?')[0];
+  return route==='start'||route.startsWith('folder/')||route.startsWith('pi-control/');
+};
+const settingsMcp = await createSettingsMcp({resumeRevokeOwner:async(requestId,check)=>localResume.revokeOwner(requestId,check),store:ownerFileStore(join(dataDir,'settings-owner.json')),access,principal:req=>accessPrincipals.get(req),localVerify:localOwnerBootstrap.verify,localExpiry:localOwnerBootstrap.expiresAt,folders:localFolders,startBroker:()=>localOwnerBootstrap.startBroker(),broker:localOwnerBootstrap.status,consolePort:port,...(MCP_RELEASE_ENABLED===true?{piControl:()=>piControl}:{}),ownerGui:{available:!!manageToken&&process.platform==='win32',generation:()=>({pid:process.pid,startedAt,port,generation:manageNonce}),verifyIdentity:expected=>verifyManagedOwnerServer({expected}),dialog:createWindowsOwnerDialog()},tunnel:{available:!!manageToken&&process.platform==='win32',generation:()=>({pid:process.pid,startedAt,port,generation:manageNonce}),verifyIdentity:expected=>verifyManagedOwnerServer({expected}),launch:tunnelLauncher,verifyConnection:tunnelLauncher.verifyConnection}});
 const host = '127.0.0.1'; // Tunnel connects outbound to this loopback listener; never bind to 0.0.0.0.
 const verifyAccess = access && createAccessPrincipalVerifier(access);
 const packageVersion = JSON.parse(await fs.readFile(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version;
@@ -118,25 +160,25 @@ const managedResumeOpen=createManagedResumeOpen({enabled:()=>localResume.status(
 const server = createServer(async (req, res) => {
   try {
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
-    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy',speechSetupCsp(Number(process.env.PORT ?? 31717)));
     const url = new URL(req.url ?? '/', 'http://localhost');
     // Public UI never serves MCP, regardless of Tunnel peer address or OS readiness.
     if (denyPublicMcp(req,res)) return;
-    if (settingsMcp.discovery(req,res)) return;
+    if (MCP_RELEASE_ENABLED===true && settingsMcp.discovery(req,res)) return;
     // Loopback management runs before the public Host/Access gates: remote mode rejects a
     // 127.0.0.1 Host for browser traffic, but the manager must still reach identity/shutdown.
     // Both routes additionally reject any request carrying proxy/tunnel headers, so a tunnel
     // cannot reach them even when the configured Host happens to be loopback.
     if (url.pathname.startsWith('/api/manage/')) {
       if (!manageHost(req) || !manageUnproxied(req)) return respond(res, 404, { error: 'not found' });
-      if(await managedResumeOpen.handle(req,res))return;
+      if(MCP_RELEASE_ENABLED===true&&await managedResumeOpen.handle(req,res))return;
       if(req.method==='POST'&&req.url==='/api/manage/local-owner/open'){const body=await readJsonBody(req,4096);await localOwnerBootstrap.issue(req,res,body);return;}
       if (req.method === 'GET' && url.pathname === '/api/manage/identity') {
         const challenge = req.headers['x-pi-console-manage-challenge'];
         const proof = typeof challenge === 'string' && /^[0-9a-f]{48}$/.test(challenge) && manageToken
           ? createHmac('sha256', manageToken).update(`pi-console-identity:${challenge}`).digest('hex') : undefined;
         const ownerProof = proof && createHmac('sha256', manageToken!).update('pi-console-owner-gui-identity:' + JSON.stringify([challenge, process.pid, startedAt, port, manageNonce])).digest('hex');
-        const resumePort=localResume.status().enabled?localOwnerBootstrap.status().port:null;
+        const resumePort=MCP_RELEASE_ENABLED===true&&localResume.status().enabled?localOwnerBootstrap.status().port:null;
         const resumeBroker=proof&&resumePort?{port:resumePort,signature:createHmac('sha256',manageToken!).update('pi-console-resume-broker:'+JSON.stringify([challenge,process.pid,startedAt,port,manageNonce,resumePort])).digest('hex')}:undefined;
         return respond(res, 200, { service: 'pi-console', version: packageVersion, pid: process.pid, startedAt, nonce: manageNonce, proof, ownerProof,resumeBroker });
       }
@@ -149,6 +191,13 @@ const server = createServer(async (req, res) => {
       }
       return respond(res, 404, { error: 'not found' });
     }
+    // Loopback speech-setup probe/landing run before the public Host/Access
+    // gates: remote mode rejects a 127.0.0.1 Host, but the Console PC's own
+    // browser must still reach the read-only probe, the landing page and its
+    // status read. Every route inside re-verifies the strict native boundary
+    // (exact loopback socket/port/Host, no proxy headers, no credentials) and
+    // is a side-effect-free GET — no management action can ever pass here.
+    if (await speechSetup.handleLocal(req,res)) return;
     if (!allowedHost(req.headers.host, access)) return respond(res, 403, { error: 'invalid host' });
     if (!access && ['cf-connecting-ip','cf-ray','x-forwarded-host','forwarded'].some(name=>req.headers[name])) return respond(res,403,{error:'remote mode not configured'});
     if (verifyAccess) {
@@ -162,15 +211,37 @@ const server = createServer(async (req, res) => {
       if (!req.headers['content-type']?.startsWith('application/json')) return respond(res, 415, { error: 'JSON required' });
     }
     const wid = url.searchParams.get('workspaceId') ?? '';
+    if(await remoteDesktop.handle(req,res))return;
+    // Owner registration and remote-connection routes stay live; the release
+    // boundary only closes the local-MCP lane subroutes inside the same prefix.
+    if (MCP_RELEASE_ENABLED===false&&mcpLaneRoute(req))return respond(res,404,{error:'not found'});
     if (await settingsMcp.handlePublic(req,res)) return;
+    const speechDescriptor=speechSetup.descriptor(req);
+    if (speechDescriptor) return respond(res,200,speechDescriptor);
+    if (await speechOnboardingHttp.handle(req,res)) return;
+    if (await speechHttp.handlePublic(req,res)) return;
     const sid = url.searchParams.get('sessionId') ?? '';
-    if (await externalMcp.owner(req,res)) return;
-    if (await trustedLocal!.handleOwner(req,res)) return;
-    if (await trustedLocal!.handleOwnerScope(req,res)) return;
-    if (await finalOwner.handle(req,res)) return;
-    if (await dotsPermissions.handle(req,res)) return;
+    if (MCP_RELEASE_ENABLED===true&&await externalMcp.owner(req,res)) return;
+    if (MCP_RELEASE_ENABLED===true&&await trustedLocal!.handleOwner(req,res)) return;
+    if (MCP_RELEASE_ENABLED===true&&await trustedLocal!.handleOwnerScope(req,res)) return;
+    if (MCP_RELEASE_ENABLED===true&&await finalOwner.handle(req,res)) return;
+    if (MCP_RELEASE_ENABLED===true&&await dotsPermissions.handle(req,res)) return;
+    // All preview consent requests inherit Host, verified Access and CSRF
+    // gates above. No unauthenticated asset or grant URL is exposed.
+    if (await htmlPreviewHttp.handle(req,res)) return;
     if (req.method === 'GET' && url.pathname === '/api/workspaces') return respond(res, 200, { workspaces: await store.listWithValidity() });
     if (req.method === 'GET' && url.pathname === '/api/workspace/text') return respond(res, 200, await readWorkspaceText(store, wid, url.searchParams.get('path') ?? ''));
+    if (req.method === 'GET' && url.pathname === '/api/workspace/html') {
+      const requested = url.searchParams.get('path') ?? '';
+      if (!/\.html?$/i.test(requested)) return respond(res, 400, { error: 'not an HTML file' });
+      await readWorkspaceText(store, wid, requested); // preserve path/UTF-8/size guards
+      const shell=await fs.readFile(join(assetsDir,'preview.html'),'utf8').catch(()=>undefined);
+      if(!shell)return respond(res,503,{error:'preview_assets_unavailable'});
+      // Only trusted UI is returned here. Workspace code lives exclusively in
+      // the consent-controlled, opaque sandboxed srcdoc frame.
+      res.writeHead(200,{'content-type':'text/html; charset=utf-8',...htmlPreviewShellHeaders});
+      res.end(shell); return;
+    }
     if (req.method === 'GET' && (url.pathname === '/api/workspace/media/info'||url.pathname === '/api/workspace/media')) {
       const media=await openWorkspaceMedia(store,wid,url.searchParams.get('path')??'');
       if(url.pathname.endsWith('/info')){try{return respond(res,200,{path:media.path,format:media.format,mime:media.mime,size:media.size})}finally{await media.handle.close()}}
@@ -222,9 +293,14 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/queue/edit') { const b = await readJsonBody(req, 256 * 1024); return respond(res, 200, { item: await runtime.editQueuedPrompt(b.workspaceId, b.sessionId, b.id, b.revision, b.text) }); }
     if (req.method === 'POST' && url.pathname === '/api/queue/remove') { const b = await readJsonBody(req); await runtime.removeQueuedPrompt(b.workspaceId, b.sessionId, b.id); return respond(res, 200, { ok: true }); }
     if (req.method === 'POST' && url.pathname === '/api/queue/resume') { const b = await readJsonBody(req); return respond(res, 200, { queue: await runtime.resumeQueuedPrompts(b.workspaceId, b.sessionId) }); }
+    if (req.method === 'POST' && url.pathname === '/api/queue/clear') { const b = await readJsonBody(req); return respond(res, 200, { queue: await runtime.clearQueuedPrompts(b.workspaceId, b.sessionId) }); }
     if (req.method === 'POST' && url.pathname === '/api/stop') { const b = await readJsonBody(req); await runtime.stop(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
     if (req.method === 'POST' && url.pathname === '/api/close') { const b = await readJsonBody(req); await runtime.closeSession(b.workspaceId, b.sessionId); return respond(res, 200, { ok: true }); }
     if (req.method === 'GET' && url.pathname === '/api/state') return respond(res, 200, await runtime.snapshot(wid, sid));
+    if (req.method === 'GET' && url.pathname === '/api/session/chat/history') {
+      const before = url.searchParams.get('before'), limit = url.searchParams.get('limit'), generation = url.searchParams.get('generation');
+      return respond(res, 200, await runtime.chatHistory(wid, sid, before === null ? undefined : Number(before), limit === null ? undefined : Number(limit), generation ?? undefined));
+    }
     if (req.method === 'GET' && url.pathname === '/api/events') {
       const from = Number(url.searchParams.get('since') ?? 0);
       if (!Number.isSafeInteger(from) || from < 0) throw new Error('invalid cursor');
@@ -232,8 +308,16 @@ const server = createServer(async (req, res) => {
       const replay: any[] = [];
       let live = false;
       // Subscribe first, then snapshot: events emitted in between land in `replay` instead
-      // of silently skipping past the client's cursor.
-      const { unsubscribe, snapshot } = await runtime.subscribedSnapshot(wid, sid, ev => { if (live && !res.destroyed) res.write(`id: ${ev.seq}\nevent: execution\ndata: ${JSON.stringify(ev)}\n\n`); else replay.push(ev); });
+      // of silently skipping past the client's cursor. The unsubscribe cleanup is
+      // registered BEFORE the await — a disconnect during slow hydration must not
+      // leak a subscriber (that would defeat idle worker eviction).
+      let unsubscribe: () => void = () => {};
+      let closed = res.destroyed;
+      req.on('close', () => { closed = true; unsubscribe(); });
+      const subscribed = await runtime.subscribedSnapshot(wid, sid, ev => { if (live && !res.destroyed) res.write(`id: ${ev.seq}\nevent: execution\ndata: ${JSON.stringify(ev)}\n\n`); else replay.push(ev); });
+      unsubscribe = subscribed.unsubscribe;
+      const snapshot = subscribed.snapshot;
+      if (closed || res.destroyed) { unsubscribe(); return; }
       if (generation && generation !== snapshot.generation) { unsubscribe(); return respond(res, 409, { error: 'event generation changed; reload snapshot' }); }
       if (snapshot.events.length && from < snapshot.events[0].seq - 1) { unsubscribe(); return respond(res, 409, { error: 'event gap; reload snapshot' }); }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' }); res.flushHeaders(); streams.add(res);
@@ -247,11 +331,11 @@ const server = createServer(async (req, res) => {
     if (req.method !== 'GET') return respond(res, 404, { error: 'not found' });
     if (url.pathname === '/third-party-notices') { const notice = await fs.readFile(fileURLToPath(new URL('../THIRD_PARTY_NOTICES.md', import.meta.url)));res.writeHead(200, {'content-type':'text/plain; charset=utf-8','cache-control':'no-cache'});res.end(notice);return; }
     const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-    if (!['index.html','manifest.webmanifest','sw.js','icon.svg','icon-maskable.svg','icon-192.png','icon-512.png'].includes(name) && !name.startsWith('assets/')) return respond(res, 404, { error: 'not found' });
+    if (!['index.html','preview.html','manifest.webmanifest','sw.js','icon.svg','icon-maskable.svg','icon-192.png','icon-512.png'].includes(name) && !name.startsWith('assets/')) return respond(res, 404, { error: 'not found' });
     if (name.includes('..') || name.includes('\\')) return respond(res,404,{error:'not found'});
     const file = join(assetsDir, name);
     const content = await fs.readFile(file);
-    res.writeHead(200, { 'content-type': ({'.html':'text/html','.js':'application/javascript','.css':'text/css','.webmanifest':'application/manifest+json','.svg':'image/svg+xml','.png':'image/png'} as Record<string,string>)[extname(name)] ?? 'application/octet-stream', 'cache-control': name==='sw.js'||name==='index.html'?'no-cache':'public, max-age=3600' }); res.end(content);
+    res.writeHead(200, { 'content-type': ({'.html':'text/html','.js':'application/javascript','.css':'text/css','.webmanifest':'application/manifest+json','.svg':'image/svg+xml','.png':'image/png'} as Record<string,string>)[extname(name)] ?? 'application/octet-stream', 'cache-control': name==='sw.js'||name==='index.html'?'no-cache':'public, max-age=3600',...(name==='preview.html'?htmlPreviewShellHeaders:{}) }); res.end(content);
   } catch (error) { const status = Number((error as Error & { status?: number }).status); respond(res, status === 404 || status === 409 ? status : 400, { error: (error as Error).message }); }
 });
 const startedAt = new Date().toISOString();
@@ -261,5 +345,5 @@ server.listen(port, host, () => {console.log(`pi-console http://${host}:${port}`
   if(trustedLocalConfig.enabled===true)void startTrustedLocalListener(trustedLocal!,31719,port).then(s=>{localListener=s;}).catch(()=>{trustedLocal!.disable();console.warn('trusted_local_mcp_listener_refused');});
 });
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; managedResumeOpen.dispose();await settingsMcp.dispose();await piControl.dispose(); await localOwnerBootstrap.dispose();trustedLocal?.dispose();localOwner.dispose();localListener?.closeAllConnections();if(localListener?.listening)await new Promise<void>(r=>localListener!.close(()=>r()));externalMcpGate.dispose(); finalOwner.dispose(); readOnlyMcp.dispose(); dotsPermissions.dispose(); recycling.stop(); for (const stream of streams) stream.end(); server.close(); await runtime.shutdown(); server.closeAllConnections(); process.exitCode = 0; }
+async function shutdown() { if (closing) return; closing = true; managedResumeOpen.dispose();await remoteDesktop.close();await speechOnboarding.dispose();await speechService.dispose();await settingsMcp.dispose();await piControl.dispose(); await localOwnerBootstrap.dispose();if(MCP_RELEASE_ENABLED!==true){await localResume.dispose();localFolders.dispose();}trustedLocal?.dispose();localOwner.dispose();localListener?.closeAllConnections();if(localListener?.listening)await new Promise<void>(r=>localListener!.close(()=>r()));externalMcpGate.dispose(); finalOwner.dispose(); readOnlyMcp.dispose(); dotsPermissions.dispose(); recycling.stop(); for (const stream of streams) stream.end(); server.close(); await runtime.shutdown(); server.closeAllConnections(); process.exitCode = 0; }
 process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());

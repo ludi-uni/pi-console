@@ -1,0 +1,13 @@
+/* Stepwise setup guide for local connections. Baseline Widely available only.
+ * Scoped to .resume-setup and .local-mcp-settings headings; does not alter
+ * interactive contract, pending reconciliation, or existing management styles. */
+.resume-setup__step{margin:12px 0;border:1px solid var(--border,#cbd5e1);border-radius:8px}
+.resume-setup__step>summary{cursor:pointer;padding:10px 12px;font-weight:600;overflow-wrap:anywhere}
+.resume-setup__step>div{padding:0 12px 12px}
+.resume-setup__step p{margin:10px 0}
+.resume-setup__body>p:first-child{margin-top:12px}
+.local-mcp-settings__area{margin:22px 0 6px;font-size:1rem;font-weight:700}
+.local-mcp-settings__where{margin:0 0 8px;color:#526179}
+@media(max-width:600px){
+ .resume-setup__step>summary{min-height:44px;padding-top:12px;padding-bottom:12px}
+}

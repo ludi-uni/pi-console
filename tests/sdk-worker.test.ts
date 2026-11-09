@@ -33,8 +33,8 @@ test('SDK resolver accepts the bounded stable range and rejects bounds, prerelea
   try {
     await mkdir(join(root, 'dist')); const cli = join(root, 'dist', 'cli.js');
     await writeFile(cli, ''); await writeFile(join(root, 'sdk.mjs'), 'export {};');
-    const accepted = ['0.99.2', '0.99.3', '0.100.0', '1.0.0', '1.0.1', '1.0.2', '1.0.3', '1.0.4', '1.1.0', '1.2.0', '1.3.0', '1.4.0'];
-    const rejected = ['0.99.0', '0.99.1', '1.4.1', '1.5.0', '2.0.0', '1.4.0-rc.1', '1.4.0+build', 'v1.4.0', 'garbage', '01.4.0', '1.4', '', '1.0.9007199254740993'];
+    const accepted = ['0.99.2', '0.99.3', '0.100.0', '1.0.0', '1.0.1', '1.0.2', '1.0.3', '1.0.4', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.4.1', '1.5.0'];
+    const rejected = ['0.99.0', '0.99.1', '1.5.1', '1.6.0', '2.0.0', '1.5.0-rc.1', '1.5.0+build', 'v1.5.0', 'garbage', '01.5.0', '1.5', '', '1.0.9007199254740993'];
     for (const version of [...accepted, ...rejected]) {
       await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version, exports: { '.': { import: './sdk.mjs' } } }));
       if (accepted.includes(version)) assert.deepEqual(resolvePiSdk(cli), { entry: join(root, 'sdk.mjs'), version, packageRoot: root });

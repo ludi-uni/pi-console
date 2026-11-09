@@ -77,6 +77,12 @@ process.on('SIGTERM', () => { void shutdown(); });
 const reader = new FrameLineReader();
 const decoder = new FrameDecoder({ generation, onError: fatal });
 let shutdownRequested = false;
+const remotePending=new Map();
+if(option('--remote-desktop-package'))globalThis[Symbol.for('pi-console.remote-desktop.invoke')]=(request,signal)=>{
+ if(!activeConsoleRunId||remotePending.size>=8||signal?.aborted)return Promise.resolve({ok:false,error:'remote_run_authority_required',outcome:'KNOWN'});
+ const requestId=randomUUID();
+ return new Promise(resolve=>{const abort=()=>{void emit({type:'console_remote_desktop_cancel',requestId});remotePending.delete(requestId);clearTimeout(timer);resolve({ok:false,error:'remote_aborted_no_retry',outcome:'UNKNOWN'});};const finish=result=>{signal?.removeEventListener('abort',abort);resolve(result);};const timer=setTimeout(()=>{remotePending.delete(requestId);signal?.removeEventListener('abort',abort);void emit({type:'console_remote_desktop_cancel',requestId});resolve({ok:false,error:'remote_timeout_no_retry',outcome:'UNKNOWN'})},95000);remotePending.set(requestId,{resolve:finish,timer});void emit({type:'console_remote_desktop_request',requestId,runId:activeConsoleRunId,request});signal?.addEventListener('abort',abort,{once:true});});
+};
 async function bind() {
   unsubscribe?.(); unsubscribePressure?.(); session = runtime.session;
   // Capture startup/extension events as well as model activity.
@@ -127,13 +133,15 @@ async function projectTrusted(sdk, cwd, agentDir, settings, { extensionsResult }
 }
 const state = () => ({ model: session.model, thinkingLevel: session.thinkingLevel, isStreaming: session.isStreaming, isCompacting: session.isCompacting,
   steeringMode: session.steeringMode, followUpMode: session.followUpMode, sessionFile: session.sessionFile, sessionId: session.sessionId,
-  sessionName: session.sessionName, autoCompactionEnabled: session.autoCompactionEnabled, messageCount: session.messages.length, pendingMessageCount: session.pendingMessageCount });
+  sessionName: session.sessionName, autoCompactionEnabled: session.autoCompactionEnabled, messageCount: session.messages.length, pendingMessageCount: session.pendingMessageCount,
+  remoteDesktopTools:option('--remote-desktop-package')?session.getAllTools().filter(t=>t.name.startsWith('remote_')).map(t=>t.name):[] });
 async function command(c) {
   if (stopping) return;
   if (!c || typeof c.type !== 'string' || typeof c.id !== 'string' || c.id.length > 256) throw new Error('invalid Console command');
   const respond = (success, data, error) => emit({ type: 'response', id: c.id, command: c.type, success, data, error });
   try {
     switch (c.type) {
+      case 'remote_desktop_result': {const pending=remotePending.get(c.requestId);if(pending){remotePending.delete(c.requestId);clearTimeout(pending.timer);pending.resolve(c.result);}return respond(true);}
       case 'prompt': {
         checkNativeIdle(c);
         let accepted = false, admissionOpen = true; const epoch = abortEpoch;
@@ -197,7 +205,7 @@ async function main() {
     const services = await sdk.createAgentSessionServices({ cwd, agentDir, settingsManager,
       resourceLoaderReloadOptions: { resolveProjectTrust: options => projectTrusted(sdk, cwd, agentDir, settingsManager, options) },
       resourceLoaderOptions: {
-      additionalExtensionPaths: [option('--extension')],
+      additionalExtensionPaths: [option('--extension'),...(option('--remote-desktop-package')?[option('--remote-desktop-package')]:[])],
       extensionFactories: [
         { name: 'codemode', builtin: true, factory: sdk.createCodemodeExtension({ mode: 'on' }) },
         { name: 'tool_search', builtin: true, factory: sdk.createToolSearchExtension() },
@@ -210,8 +218,9 @@ async function main() {
   runtime = await sdk.createAgentSessionRuntime(create, { cwd, agentDir, sessionManager });
   runtime.setRebindSession(bind);
   await bind();
+  if(option('--remote-desktop-package')&&globalThis[Symbol.for('pi-console.remote-desktop.registered')]!==true)throw Error('remote_package_tool_registration_failed');
   if (!session.extensionRunner.getRegisteredCommands().some(c => c.invocationName === 'pi-console-history-rpc')) throw new Error('Console safety extension did not load');
-  await writer.send({ type: 'console_ready', protocolVersion: 1, sdkVersion: option('--sdk-version'), sessionId: session.sessionId, capabilities: ['chunked-records', 'direct-history', 'preflight-ack'] });
+  await writer.send({ type: 'console_ready', protocolVersion: 1, sdkVersion: option('--sdk-version'), sessionId: session.sessionId,remoteDesktop:option('--remote-desktop-package')?true:undefined, capabilities: ['chunked-records', 'direct-history', 'preflight-ack'] });
   process.stdin.on('data', chunk => {
     try { for (const frame of reader.push(chunk)) {
       const c = decoder.accept(frame); if (!c) continue;

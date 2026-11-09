@@ -1,2 +1,2 @@
 import { defineConfig } from 'vite';
-export default defineConfig({ build: { outDir: 'dist',rollupOptions:{input:['index.html','owner.html']} } });
+export default defineConfig({ build: { outDir: 'dist',rollupOptions:{input:['index.html','owner.html','speech-setup.html','preview.html']} } });

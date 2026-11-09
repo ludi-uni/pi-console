@@ -25,7 +25,13 @@ export interface LocalOwnerBootstrapOptions {
     resume?: { status():{enabled:boolean};ownerBroker(context: {ownerVerify:(req:IncomingMessage)=>boolean;ownerExpiry:(req:IncomingMessage)=>number|undefined;port:()=>number}):(req:IncomingMessage,res:ServerResponse)=>Promise<boolean>;dispose():Promise<void> };
     consolePort?: number;
     settings?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+    /** Trusted local-owner voice/STT management boundary; session verify is enforced inside. */
+    voice?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
     control?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+    /** Credential profile provisioning lane (read/control/final MCP keys). Default
+     * preserves the standalone/test behavior; the release composition sets false so
+     * existing persisted state stays readable but no new credential can be written. */
+    credentials?: boolean;
     /** Trusted composition/test injection only; never configurable from HTTP/env/profile. */
     randomKey?: () => string;
     delegate?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
@@ -64,6 +70,24 @@ export function createLocalOwnerBootstrap(options: LocalOwnerBootstrapOptions) {
         return { key, ...s };
     };
     const verify = (req: IncomingMessage) => !!session(req);
+    /**
+     * Validates the request once through the full native boundary, then returns a
+     * lease guard that re-checks the *session record* (still present, unexpired,
+     * listener alive) instead of the request socket — long-running jobs must not
+     * fail just because the keepalive connection or tab moved on. Returns
+     * undefined when the initial boundary check fails. No secret ever leaves.
+     */
+    const authorize = (req: IncomingMessage): (() => void) | undefined => {
+        const s = session(req);
+        if (!s)
+            return;
+        const key = s.key;
+        return () => {
+            const current = sessions.get(key);
+            if (disposed || !server?.listening || !current || current.expiresAt <= now())
+                throw new PermissionFault('owner_session_expired');
+        };
+    };
     const resumeHttp=options.resume?.ownerBroker({ownerVerify:verify,ownerExpiry:req=>session(req)?.expiresAt,port:()=>port??0});
     const folderHttp = options.folders && folderMcpHttp(options.folders, verify, req => session(req)?.expiresAt);
     const clearCookie = (res: ServerResponse) => res.setHeader('set-cookie', `${cookieName}=; Path=/local-owner; HttpOnly; SameSite=Strict; Max-Age=0`);
@@ -101,6 +125,7 @@ export function createLocalOwnerBootstrap(options: LocalOwnerBootstrapOptions) {
         if (resumeHttp && await resumeHttp(req,res)) return;
         if (folderHttp && await folderHttp(req, res)) return;
         if (options.control && await options.control(req, res)) return;
+        if (options.voice && await options.voice(req, res)) return;
         if (options.settings && await options.settings(req, res)) return;
         if (!native(req, true)) {
             req.resume();
@@ -153,6 +178,11 @@ export function createLocalOwnerBootstrap(options: LocalOwnerBootstrapOptions) {
                 sessions.delete(s.key);
                 clearCookie(res);
                 send(res, 200, { authenticated: false });
+                return;
+            }
+            if ((url === '/local-owner/credentials/save' || url === '/local-owner/credentials/result') && options.credentials === false) {
+                req.resume();
+                send(res, 404, {});
                 return;
             }
             if (url === '/local-owner/credentials/save') {
@@ -251,7 +281,7 @@ export function createLocalOwnerBootstrap(options: LocalOwnerBootstrapOptions) {
         failures = 0;
         send(res, 200, { url: `http://127.0.0.1:${port}/local-owner/`, code, expiresAt: bootstrap.expiresAt });
     }
-    return { verify, expiresAt: (req: IncomingMessage) => session(req)?.expiresAt, issue, profile, async startBroker() { if (!configured || disposed) throw new PermissionFault('local_owner_setup_incomplete'); await open(); }, status: () => ({ configured, listening: !!server?.listening, port }), async dispose() {
+    return { verify, authorize, expiresAt: (req: IncomingMessage) => session(req)?.expiresAt, issue, profile, async startBroker() { if (!configured || disposed) throw new PermissionFault('local_owner_setup_incomplete'); await open(); }, status: () => ({ configured, listening: !!server?.listening, port }), async dispose() {
             if (disposed)
                 return;
             disposed = true;

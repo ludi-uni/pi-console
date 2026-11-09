@@ -2,7 +2,7 @@ import React, { memo, useState } from 'react';
 import type { ChatMessage as Message } from '../shared/types.ts';
 import MarkdownContent from './MarkdownContent.tsx';
 export async function copyText(value:string) {await navigator.clipboard.writeText(value);}
-function ChatItem({message,activityLabel,onOpenFile,showProgress=true,waitingLabel='Waiting for Pi output…'}:{message:Message;activityLabel?:string;onOpenFile?:(path:string,line?:number)=>void;showProgress?:boolean;waitingLabel?:string}) {
+function ChatItem({message,activityLabel,onOpenFile,showProgress=true,waitingLabel='Waiting for Pi output…'}:{message:Message;activityLabel?:string;onOpenFile?:(path:string,line?:number,section?:string)=>void;showProgress?:boolean;waitingLabel?:string}) {
   const [copied,setCopied]=useState('');
   const waiting = message.role==='assistant'&&!message.complete&&!message.text.trim()&&!message.thinking?.trim()&&!message.tools?.length;
   const copyOutput = (message.text.trim()?message.text:'') || message.tools?.filter(tool=>tool.output!==undefined).map(tool=>`${tool.name}\n${tool.output}`).join('\n\n') || message.thinking?.trim() || '';
@@ -19,4 +19,23 @@ function ChatItem({message,activityLabel,onOpenFile,showProgress=true,waitingLab
     {message.role==='assistant'&&!waiting&&<div className="message-footer"><button aria-label="Copy all" disabled={!copyOutput} onClick={()=>void copy(copyOutput,'Output')}>Copy all</button>{copied&&<span role="status" className="copy-feedback">{copied}</span>}</div>}
   </article>;
 }
-export default memo(ChatItem);
+// JSON snapshots recreate message/tool/attachment objects even when their
+// display content is unchanged. Compare flat display records, not just object
+// identity, so a streaming sibling or snapshot refresh does not parse every
+// historical Markdown block again. Function props still participate: a new
+// workspace's file handler must never be hidden by memoization.
+const sameFields=(left:object,right:object)=>{
+  if(left===right)return true;
+  const before=left as Record<string,unknown>,after=right as Record<string,unknown>,keys=Object.keys(before);
+  return keys.length===Object.keys(after).length&&keys.every(key=>Object.hasOwn(after,key)&&Object.is(before[key],after[key]));
+};
+const sameRecords=(left:object[]|undefined,right:object[]|undefined):boolean=>left===right||!!left&&!!right&&left.length===right.length&&left.every((item,index)=>sameFields(item,right[index]));
+export function sameChatItemProps(previous:Parameters<typeof ChatItem>[0],next:Parameters<typeof ChatItem>[0]):boolean{
+  const {message:before,...beforeProps}=previous,{message:after,...afterProps}=next;
+  if(!sameFields(beforeProps,afterProps))return false;
+  if(before===after)return true;
+  const {tools:beforeTools,attachments:beforeAttachments,...beforeContent}=before;
+  const {tools:afterTools,attachments:afterAttachments,...afterContent}=after;
+  return sameFields(beforeContent,afterContent)&&sameRecords(beforeTools,afterTools)&&sameRecords(beforeAttachments,afterAttachments);
+}
+export default memo(ChatItem,sameChatItemProps);

@@ -4,7 +4,7 @@
 
 ## Installation
 
-Requires Node.js 24+ and a compatible Pi SDK (stable 0.99.2–1.4.0, verified against the latest release; intermediate releases are accepted but not individually exercised). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
+Requires Node.js 24+ and a compatible Pi SDK (stable 0.99.2–1.5.0; SDK initialization, extensions and direct history reads checked on 1.5.0 and 1.4.0, with package installation and start/stop also checked on 1.5.0, all without model calls; not every supported version was individually exercised). Besides the [published package](../README.en.md#quick-start), you can register a source checkout as a local Pi package:
 
 ```powershell
 npm install
@@ -130,4 +130,4 @@ For workspace/session/mobile/PWA/reconnect behavior, see [Phase 3](phase-3-daily
 
 Pi Console source is under the [MIT License](../LICENSE). Runtime dependency licenses and copyright notices are in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and linked from Settings → About the app. Pi CLI is a separate installation; pet artwork comes from separately installed packages and is **not** covered by this project's license. Check dependency and added-artwork rights before redistributing a modified package.
 
-The package is published as [`@ludi-uni/pi-console`](https://www.npmjs.com/package/@ludi-uni/pi-console). To inspect a local tarball use `npm pack --dry-run`, then `npm pack` if needed; `prepack` builds browser assets. Consumers need a compatible Pi CLI and a Node.js/npm installation of runtime dependencies. Never publish the unauthenticated loopback server directly to a public interface.
+The package is published as [`@ludi-uni/pi-console`](https://www.npmjs.com/package/@ludi-uni/pi-console). Documentation in the npm package is limited to top-level Markdown files (`docs/*.md`), example screenshots (`docs/images/`) and release notes (`docs/releases/*.md`). Design Markdown remains as historical reference; local verification archives, logs, scripts and JSON evidence are preserved on disk but excluded from distribution. To inspect a local tarball use `npm pack --dry-run`, then `npm pack` if needed; `prepack` builds browser assets. Consumers need a compatible Pi CLI and a Node.js/npm installation of runtime dependencies. Never publish the unauthenticated loopback server directly to a public interface.

@@ -275,14 +275,25 @@ export class OrchestratorSource {
   private last = new Map<string,string>();
   private timer?: NodeJS.Timeout;
   private polling = false;
+  private lastObservedKey?: string;
+  private idleBackoff = 0;
+  private stopped = false;
   boundRun?: { id: string; request: string; createdAt: string };
   constructor(private readonly kit: string, private readonly sessionId: string, private readonly workspacePath: string,
     private readonly publish: (node: ExecutionNode) => void,
     private readonly storePath?: string, private readonly preserveDir?: string) {}
-  start() { this.timer = setInterval(() => void this.poll(),1500); void this.poll(); }
-  stop() { if (this.timer) clearInterval(this.timer); }
+  private schedule() {
+    if (this.stopped) return;
+    clearTimeout(this.timer);
+    // Idle polls back off exponentially up to 60s; any live run or snapshot
+    // change resets to the fast 1.5s cadence.
+    this.timer = setTimeout(() => void this.poll(), this.idleBackoff ? Math.min(1500 * 2 ** this.idleBackoff, 60000) : 1500);
+    this.timer.unref?.();
+  }
+  start() { this.stopped = false; this.schedule(); void this.poll(); }
+  stop() { this.stopped = true; if (this.timer) clearTimeout(this.timer); }
   async poll() {
-    if (this.polling) return;
+    if (this.polling || this.stopped) return;
     this.polling = true;
     try {
       const data = await readBoundOrchestrator(this.kit,this.sessionId,this.workspacePath,this.storePath,this.preserveDir);
@@ -298,6 +309,8 @@ export class OrchestratorSource {
         // archived fallback is never written back into the kit journal (no reseed).
         if (!data.archived)
           await recordRunBinding(this.kit, this.sessionId, data.snapshot.runId, this.preserveDir, data.run?.repo_root ?? data.snapshot.repoRoot);
+        // Run timestamps need not change for every task/decision update. Keep
+        // projecting; upsert deduplicates individual nodes without hiding changes.
         this.project(data);
       }
       // Rehydrate this session's earlier validated runs so they are not lost from Execution
@@ -305,12 +318,21 @@ export class OrchestratorSource {
       const boundId = this.boundRun?.id ?? data?.run?.id;
       for (const historical of await readSessionRunHistory(this.kit, this.sessionId, this.workspacePath, this.storePath, typeof boundId === 'string' ? boundId : undefined, this.preserveDir))
         this.project(data?.archived ? {...historical, archived:true} : historical);
-    } finally { this.polling = false; }
+      // Back off only while nothing is live: a bound run in a non-terminal status
+      // keeps the fast cadence so decisions/progress stay near-real-time.
+      const status = data?.run?.status ?? data?.snapshot.activity?.state;
+      const live = !!data && !data.archived && (!status || !['completed','failed','cancelled','interrupted'].includes(String(status)));
+      const key = JSON.stringify([data?.snapshot.runId, status, data?.snapshot.activity?.updatedAt, data?.run?.updated_at, data?.archived]);
+      const changed = key !== this.lastObservedKey;this.lastObservedKey = key;
+      this.idleBackoff = live || changed ? 0 : Math.min(this.idleBackoff + 1, 6);
+    } finally { this.polling = false; this.schedule(); }
   }
   private upsert(node: ExecutionNode) {
     const key = JSON.stringify(node);
     if (this.last.get(node.id) === key) return;
-    this.last.set(node.id,key); this.publish(node);
+    this.last.delete(node.id);this.last.set(node.id,key);
+    if (this.last.size > 8192) this.last.delete(this.last.keys().next().value!);
+    this.publish(node);
   }
   project(data: OrchestratorRead) {
     const {snapshot: doc,run} = data, a = doc.activity;

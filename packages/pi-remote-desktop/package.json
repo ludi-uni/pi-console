@@ -1,0 +1,1 @@
+{"name":"@ludi-uni/pi-remote-desktop","version":"0.1.0","type":"module","private":true,"keywords":["pi-package"],"pi":{"extensions":["./index.mjs"]},"files":["index.mjs","README.md"]}

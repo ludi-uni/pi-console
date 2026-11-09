@@ -5,7 +5,10 @@
 // interactive session and never touch a server started by an older Pi Console version.
 import { startManagedServer, stopManagedServer, restartManagedServer, managedServerStatus } from './server-manager.mjs';
 import {runOwnerLogin} from './owner-login.mjs';
+import { MCP_RELEASE_ENABLED } from '../shared/release-availability.mjs';
 
+// `pi-console local-resume <id>` is the MCP stdio entry: it must never write
+// banners/logs to stdout, which is reserved for JSON-RPC frames only.
 const usage = `Usage: pi-console [command]
 
 Commands:
@@ -16,6 +19,7 @@ Commands:
   restart <port>   restart on a specific port
   status           show running/stopped state, PID, port and URL
   owner-login      confirm locally, display a one-time code and open the authentication page
+  local-resume <id> run the local-resume MCP stdio session for the client id
   port             print the configured port
   help             show this message
 
@@ -38,6 +42,18 @@ const describe = result => {
 async function main() {
   const [command, extra, ...rest] = process.argv.slice(2);
   if (rest.length) { console.error(`unexpected argument: ${rest[0]}\n`); console.error(usage); process.exitCode = 2; return; }
+  if (command === 'local-resume') {
+    // Release boundary: local MCP is not wired for this release. stdout stays
+    // clean (reserved for JSON-RPC); the refusal is stderr-only and nonzero.
+    if (MCP_RELEASE_ENABLED !== true) { console.error('local-resume is not available in this release.'); process.exitCode = 1; return; }
+    if (extra === undefined) { console.error('local-resume requires a client id'); process.exitCode = 2; return; }
+    if (!/^[\w-]{1,100}$/.test(extra)) { console.error('invalid local-resume client id'); process.exitCode = 1; return; }
+    // Dynamic import: parse failures stay on stderr; the shared session runner
+    // wraps the run in the diagnostic context that sanitizes startup errors.
+    const { runLocalResumeMcpSession } = await import('./local-resume-mcp.mjs');
+    await runLocalResumeMcpSession(extra);
+    return;
+  }
   if (extra !== undefined && !/^\d{1,5}$/.test(extra)) { console.error('port must be an integer from 1 to 65535'); process.exitCode = 2; return; }
   if (extra !== undefined && command !== 'start' && command !== 'restart') { console.error(`a port argument is only valid for start/restart`); process.exitCode = 2; return; }
   const port = extra === undefined ? undefined : Number(extra);

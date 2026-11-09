@@ -21,6 +21,7 @@ export default function SettingsLocalMcp({ja=true}:{ja?:boolean}={}) {
   const refresh = async () => { try { const v = await settingsRequest('status', {}); if (alive.current) setStatus(v); } catch(e) { if(alive.current)setStatus(undefined); throw e; } };
   const run = async (work: () => Promise<void>) => { if (lock.current) return; lock.current = true; setBusy(true); setError(''); try { await work(); } catch { if (alive.current) setError('認証または結果を確認できません。保存した申請IDで照合し、確認できるまで再送しないでください。'); } finally { lock.current = false; if (alive.current) setBusy(false); } };
   const clear = () => { sessionStorage.removeItem(slot); setPending(undefined); };
+  const openManagement = () => setManagementOpen(true);
   const inspect = async (requestId: string) => { const v = await settingsRequest('owner-result', { requestId }); if (alive.current) { setReceipt(v); if (terminal.includes(v.state)) clear(); await refresh(); } return v; };
   useEffect(() => { alive.current = true; try { setPending(sessionStorage.getItem(slot) ?? undefined); } catch {} void run(refresh); return () => { alive.current = false; }; }, []);
   // Queries only: navigation/reload/lost responses never create a new request or dialog.
@@ -35,11 +36,14 @@ export default function SettingsLocalMcp({ja=true}:{ja?:boolean}={}) {
     return () => { stopped = true; clearTimeout(timer); };
   }, [pending]);
   return <section className="local-mcp-settings">
+    <h3 className="local-mcp-settings__area">{text('New connection: prepare first','新しい連携：まず準備')}</h3>
+    <p className="local-mcp-settings__where">{text('You are browsing on your current PC; owner verification and approval dialogs happen on the Console PC where Pi Console runs. No request is created just by opening or moving around this page.','この画面は今見ている PC のブラウザーに表示しています。本人確認や承認のダイアログは、Pi Console が動作する Console PC 側で行います。このページを開いたり移動したりするだけで申請は作られません。')}</p>
     <LocalResumeMcp available={false}/>
-    <ResumeConnectionSetup/>
+    <ResumeConnectionSetup ja={ja} onManage={openManagement}/>
+    <h3 className="local-mcp-settings__area">{text('Existing connections and permissions','既存の接続・権限')}</h3>
     <button aria-expanded={managementOpen} aria-controls="existing-connection-management" onClick={()=>managementOpen?closeManagement():setManagementOpen(true)}>{text('Manage existing connections and permissions','既存の接続・権限を管理')}</button>
-    {pending&&!managementOpen&&<p role="status">{text('An existing request needs result reconciliation. Open existing management; the new preview does not replace it.','既存の処理結果の照合が必要です。接続管理を開いてください。新しい下書きでは置き換えません。')}</p>}
-    {managementOpen&&<section id="existing-connection-management" aria-label="Existing connection and permissions"><h3>{text('Existing connections and permissions','既存の接続・権限')}</h3><p>設定から本人の接続・親フォルダ・操作・期限・解除を管理します。MCP client と companion は Console PC 上で実行します。別端末の browser から申請する場合も、確認ダイアログは Console PC に表示します。</p>
+    {pending&&<><p role="status">{text('An existing request needs result reconciliation. Open the existing management below; the new preview does not replace it.','既存の処理結果の照合が必要です。下の接続管理で照合してください。新しい下書きでは置き換えません。')}</p><button onClick={openManagement}>{text('Reconcile in existing management','接続管理で照合')}</button></>}
+    {managementOpen&&<section id="existing-connection-management" aria-label="Existing connection and permissions"><p>設定から本人の接続・親フォルダ・操作・期限・解除を管理します。MCP client と companion は Console PC 上で実行します。別端末の browser から申請する場合も、確認ダイアログは Console PC に表示します。</p>
     {error && <p role="alert">{error}</p>}<button disabled={busy} onClick={() => void run(refresh)}>管理者状態を再取得</button>
     {status && !status.authenticatedOwner && <><p role="status">設定未完了、またはこの Access 利用者は登録済み管理者ではありません。最初の訪問者を自動登録しません。</p>
       {!status.accessConfigured ? <p>署名検証する Access の issuer / AUD が未設定です。登録申請は利用できません。</p> : !status.setupComplete && <><p>登録申請を押すと、Console PC の確認ダイアログに申請ID・検証済み subject・issuer・AUD・期限・Console 世代が表示されます。ご自身の申請と一致する内容を確認し、「この本人を登録」を押して設定に戻ってください。登録は親フォルダの許可や MCP キー発行を伴いません。</p>

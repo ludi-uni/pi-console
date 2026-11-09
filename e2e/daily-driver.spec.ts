@@ -3,6 +3,7 @@ import { openWorkspaceAdd } from './workspace-setup.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import packageInfo from '../package.json' with { type: 'json' };
 
 test('mobile: workspace/session switch, send, execution, stop and output copy',async({page,context})=>{
   await context.grantPermissions(['clipboard-read','clipboard-write']);await page.setViewportSize({width:390,height:780});
@@ -62,7 +63,7 @@ test('mobile: workspace/session switch, send, execution, stop and output copy',a
 });
 
 test('PWA: manifest, icons, service worker, offline shell and reconnect UI',async({page,context})=>{
-  await page.goto('/');await page.evaluate(()=>navigator.serviceWorker.ready);await expect.poll(async()=>page.evaluate(async()=>{const c=await caches.open('pi-console-shell-v3');return (await c.keys()).some(req=>req.url.includes('/assets/'))})).toBe(true);
+  await page.goto('/');await page.evaluate(()=>navigator.serviceWorker.ready);await expect.poll(async()=>page.evaluate(async(cacheName)=>{const c=await caches.open(cacheName);return (await c.keys()).some(req=>req.url.includes('/assets/'))},`pi-console-shell-v${packageInfo.version}`)).toBe(true);
   const manifest=await (await page.request.get('/manifest.webmanifest')).json();
   expect(manifest.display).toBe('standalone');expect(manifest.icons.some((i:any)=>i.sizes==='192x192')).toBe(true);expect(manifest.icons.some((i:any)=>i.sizes==='512x512')).toBe(true);
   const cdp=await context.newCDPSession(page);await cdp.send('Page.enable');const check=await cdp.send('Page.getInstallabilityErrors');
